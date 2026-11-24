@@ -58,7 +58,7 @@ internal static partial class PlaytestCommandFactory
         command.Validators.Add(result =>
         {
             XboxPartnerGameResolver.RequireOneGame(result, game);
-            if (result.GetValue(noWait) && result.GetResult(timeout) is { Implicit: false })
+            if (result.GetFlag(noWait) && result.GetResult(timeout) is { Implicit: false })
             {
                 result.AddError("--no-wait and --timeout cannot be combined.");
             }
@@ -148,14 +148,14 @@ internal static partial class PlaytestCommandFactory
                         Console.Error.WriteLine(recovery);
                         return 1;
                     }
-                    catch (Exception exception) when (sent && IsUncertainSubmission(exception))
+                    catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
                     {
                         Console.Error.WriteLine(
                             "The playtest publish was interrupted or its response could not be verified; "
                             + "it is unknown whether it was queued.");
                         Console.Error.WriteLine($"Check the playtest's status before publishing again with: {recovery}");
                         XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken, correlationId);
-                        return OutcomeUnknownExitCode;
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
                     var warnings = PlaytestFields.ReadMessages(json, "warnings");
@@ -241,7 +241,7 @@ internal static partial class PlaytestCommandFactory
         command.Validators.Add(result =>
         {
             XboxPartnerGameResolver.RequireOneGame(result, game);
-            if (result.GetValue(noWait) && result.GetResult(timeout) is { Implicit: false })
+            if (result.GetFlag(noWait) && result.GetResult(timeout) is { Implicit: false })
             {
                 result.AddError("--no-wait and --timeout cannot be combined.");
             }
@@ -308,14 +308,14 @@ internal static partial class PlaytestCommandFactory
                         Console.Error.WriteLine(recovery);
                         return 1;
                     }
-                    catch (Exception exception) when (sent && IsUncertainSubmission(exception))
+                    catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
                     {
                         Console.Error.WriteLine(
                             "The playtest delete was interrupted or its response could not be verified; "
                             + "it is unknown whether it was queued.");
                         Console.Error.WriteLine($"Check the playtest before deleting again with: {recovery}");
                         XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken, correlationId);
-                        return OutcomeUnknownExitCode;
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
                     var status = PlaytestFields.ReadDeleteStatus(json);
@@ -515,7 +515,7 @@ internal static partial class PlaytestCommandFactory
 
     /// <summary>
     /// Reads the playtest until <paramref name="wait"/> says the operation finished, or the timeout
-    /// passes. Reads are safe to repeat, so a short run of transient failures is tolerated.
+    /// passes. The wait runs on <see cref="XboxPartnerPoller"/>, which retries transient read failures.
     /// </summary>
     private static async Task<int> WaitForPlaytestAsync(
         PlaytestWait wait,
@@ -535,89 +535,71 @@ internal static partial class PlaytestCommandFactory
         var stillRunning = $"{wait.Activity} may still be running on the service. Check its status with: {recovery}";
         Console.Error.WriteLine(
             $"Waiting up to {TestAccountCommandFactory.FormatDuration(timeout)} for playtest {id} to be {wait.Goal}...");
-        var deadline = dependencies.GetUtcNow() + timeout;
 
         var status = initialStatus;
         var changed = false;
-        var failures = 0;
-        TimeSpan? nextDelay = null;
+        int? exitCode = null;
         try
         {
-            while (true)
+            var finished = await XboxPartnerPoller.PollAsync<string?>(
+                async token =>
+                {
+                    try
+                    {
+                        return await client.GetPlaytestAsync(url, sellerId, storeId, id, token);
+                    }
+                    catch (XboxPartnerApiException exception)
+                        when (exception.StatusCode == HttpStatusCode.NotFound && wait.OnNotFound is not null
+                            && !XboxPartnerErrorGuidance.IsGameNotFound(exception))
+                    {
+                        return null;
+                    }
+                },
+                json =>
+                {
+                    if (json is null)
+                    {
+                        exitCode = wait.OnNotFound!();
+                        return true;
+                    }
+
+                    var summary = PlaytestFields.ReadSummary(json);
+
+                    // A read that still carries the etag from before the publish is the old version, whatever
+                    // its status, so it says nothing about this publish. A read without an etag proves a new
+                    // version only by a status other than the one read before publishing, so republishing a
+                    // PublishFailed playtest never reports the earlier failure.
+                    var readEtag = QuoteEtag(summary.Etag);
+                    if (wait.SkipsOldVersion
+                        && (readEtag == initialEtag
+                            || (readEtag is null && !changed
+                                && string.Equals(summary.Status, initialStatus, StringComparison.OrdinalIgnoreCase))))
+                    {
+                        return false;
+                    }
+
+                    changed = true;
+
+                    if (!string.Equals(summary.Status, status, StringComparison.OrdinalIgnoreCase))
+                    {
+                        status = summary.Status;
+                        Console.Error.WriteLine(
+                            $"Playtest {id} is now {XboxPartnerCommandSupport.ForTerminal(status ?? "unknown")}.");
+                    }
+
+                    exitCode = wait.Finish(json, summary);
+                    return exitCode is not null;
+                },
+                failedReadRetryAfter => failedReadRetryAfter is { } retryAfter
+                    ? TestAccountJobWaiter.Clamp(retryAfter)
+                    : PublishPollInterval,
+                timeout,
+                dependencies.DelayAsync,
+                dependencies.GetUtcNow,
+                cancellationToken);
+            if (finished)
             {
-                var remaining = deadline - dependencies.GetUtcNow();
-                if (remaining <= TimeSpan.Zero)
-                {
-                    break;
-                }
-
-                var delay = nextDelay ?? PublishPollInterval;
-                await dependencies.DelayAsync(delay < remaining ? delay : remaining, cancellationToken);
-                remaining = deadline - dependencies.GetUtcNow();
-                if (remaining <= TimeSpan.Zero)
-                {
-                    break;
-                }
-
-                // The deadline bounds the read too, so a slow answer can't stretch the wait past --timeout.
-                using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                readCancellation.CancelAfter(remaining);
-                string json;
-                try
-                {
-                    json = await client.GetPlaytestAsync(url, sellerId, storeId, id, readCancellation.Token)
-                        .WaitAsync(readCancellation.Token);
-                    failures = 0;
-                    nextDelay = null;
-                }
-                catch (Exception) when (readCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (XboxPartnerApiException exception)
-                    when (exception.StatusCode == HttpStatusCode.NotFound && wait.OnNotFound is not null
-                        && !XboxPartnerErrorGuidance.IsGameNotFound(exception))
-                {
-                    return wait.OnNotFound();
-                }
-                catch (Exception exception) when (
-                    TestAccountJobWaiter.IsTransient(exception, cancellationToken)
-                    && ++failures < TestAccountJobWaiter.MaxConsecutiveReadFailures)
-                {
-                    nextDelay = exception is XboxPartnerApiException { RetryAfter: { } retryAfter }
-                        ? TestAccountJobWaiter.Clamp(retryAfter)
-                        : null;
-                    continue;
-                }
-
-                var summary = PlaytestFields.ReadSummary(json);
-
-                // A read that still carries the etag from before the publish is the old version, whatever
-                // its status, so it says nothing about this publish. A read without an etag proves a new
-                // version only by a status other than the one read before publishing, so republishing a
-                // PublishFailed playtest never reports the earlier failure.
-                var readEtag = QuoteEtag(summary.Etag);
-                if (wait.SkipsOldVersion
-                    && (readEtag == initialEtag
-                        || (readEtag is null && !changed
-                            && string.Equals(summary.Status, initialStatus, StringComparison.OrdinalIgnoreCase))))
-                {
-                    continue;
-                }
-
-                changed = true;
-
-                if (!string.Equals(summary.Status, status, StringComparison.OrdinalIgnoreCase))
-                {
-                    status = summary.Status;
-                    Console.Error.WriteLine(
-                        $"Playtest {id} is now {XboxPartnerCommandSupport.ForTerminal(status ?? "unknown")}.");
-                }
-
-                if (wait.Finish(json, summary) is { } exitCode)
-                {
-                    return exitCode;
-                }
+                return exitCode!.Value;
             }
 
             Console.Error.WriteLine(

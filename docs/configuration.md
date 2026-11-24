@@ -57,16 +57,16 @@ stderr.
 
 A setting's variable is `XBOX_` and its key, with `__` (two underscores) in place of each `:`,
 so `Telemetry:Enabled` is `XBOX_TELEMETRY__ENABLED`. Write names in capitals. A variable applies
-to the shell that sets it and every command that shell starts:
+to the shell that sets it and every command that shell starts. In bash or zsh:
 
 ```bash
-# Linux / macOS
 export XBOX_XBOXPARTNER__TIMEOUTSECONDS=300
 xbox game list
 ```
 
+In PowerShell:
+
 ```powershell
-# Windows PowerShell
 $env:XBOX_XBOXPARTNER__TIMEOUTSECONDS = "300"
 xbox game list
 ```
@@ -107,11 +107,13 @@ for one command:
 xbox --disable-telemetry auth status
 ```
 
-To turn it off for a shell:
+To turn it off for a shell, in bash or zsh:
 
 ```bash
 export XBOX_TELEMETRY_OPTOUT=1
 ```
+
+In PowerShell:
 
 ```powershell
 $env:XBOX_TELEMETRY_OPTOUT = "1"
@@ -123,20 +125,4 @@ See [Telemetry](telemetry.md) for what's collected.
 
 Earlier releases read `appsettings.json` from beside the executable. If you changed a value in
 it, set its `XBOX_` variable instead: for example, `"AzureAd": { "ClientId": "..." }` becomes
-`XBOX_AZUREAD__CLIENTID`. You might see these messages until you finish:
-
-- `--config-env` fails with this error. Remove the option, and set `XBOX_` variables instead.
-
-  ```text
-  --config-env is no longer supported because settings files are no longer read. Set XBOX_ environment variables instead, such as XBOX_AZUREAD__CLIENTID.
-  ```
-
-- While an `appsettings*.json` file is beside the executable, commands write this note to
-  stderr. Delete the file.
-
-  ```text
-  Note: '<file>' is no longer read. Settings come from the built-in defaults, XBOX_ environment variables, and command options. Delete the file to hide this note.
-  ```
-
-- PlayFab commands fail with an error that names `XBOX_PLAYFAB__REQUESTHEADERS__0__VALUE` if an
-  earlier error message led you to set it. Remove the variable.
+`XBOX_AZUREAD__CLIENTID`. The CLI no longer reads the file, so you can delete it.

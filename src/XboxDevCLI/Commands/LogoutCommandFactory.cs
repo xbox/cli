@@ -51,6 +51,8 @@ internal static class LogoutCommandFactory
             return 0;
         });
 
-        return command.FormatsErrors((_, message) => $"Logout failed: {message}");
+        return command
+            .FormatsErrors((_, message) => $"Logout failed: {message}")
+            .WithMetadata(new CommandMetadata(Examples: ["xbox auth logout"]));
     }
 }

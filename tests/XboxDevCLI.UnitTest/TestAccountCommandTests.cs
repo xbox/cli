@@ -355,6 +355,7 @@ public class TestAccountCommandTests
     [InlineData(HttpStatusCode.Forbidden, false, """{"code":"test_account_access_denied"}""", "not a member of this seller")]
     [InlineData(HttpStatusCode.Forbidden, true, "not json", "different seller")]
     [InlineData(HttpStatusCode.NotFound, true, null, "batch ID")]
+    [InlineData(HttpStatusCode.NotFound, true, """{"code":"test_account_batch_not_found"}""", "No such batch for this seller.")]
     [InlineData(HttpStatusCode.NotFound, false, null, "Test accounts may be unavailable.")]
     [InlineData(HttpStatusCode.BadGateway, false, null, "Retry first.")]
     [InlineData(HttpStatusCode.BadGateway, true, null, "check that your account has")]
@@ -429,7 +430,7 @@ public class TestAccountCommandTests
     [InlineData("test-account", "job", "get", "job-1", "--batch-id", "42")]
     [InlineData("test-account", "batch", "update", "42", "--tag", "nightly", "--confirm", "--no-wait")]
     [InlineData("test-account", "batch", "delete", "42", "--confirm", "--no-wait")]
-    [InlineData("xbl", "config", "status", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "ABCDEF.1")]
+    [InlineData("xbl", "config", "status", "--scope", "title", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]
     public async Task Throttled_ReportsTheWaitWithoutRetrying(params string[] args)
     {
         foreach (string body in new[] { """{"code":"rate_limited"}""", """{"code":"downstream_throttled"}""", """{"code":"another_code"}""", "" })

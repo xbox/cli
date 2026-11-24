@@ -72,16 +72,17 @@ xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData
 
 ### Get one title data key
 
+Pipe the request body to `--body-file -`, which works in every shell, including
+[Windows PowerShell 5.1](#windows-powershell-51):
+
 ```bash
-xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData --body '{"Keys":["MyKey"]}'
+echo '{"Keys":["MyKey"]}' | xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData --body-file -
 ```
 
 ### Set title data
 
-Pass the request body inline with `--body`:
-
 ```bash
-xbox --playfab-title-id ABC123 playfab api /Admin/SetTitleData --body '{ "Key": "MyKey", "Value": "my-value" }'
+echo '{ "Key": "MyKey", "Value": "my-value" }' | xbox --playfab-title-id ABC123 playfab api /Admin/SetTitleData --body-file -
 ```
 
 ```json
@@ -111,6 +112,15 @@ xbox --playfab-title-id ABC123 --data-only --output json-compact playfab api /Ad
 ```json
 {"Data":{"MyKey":"my-value"}}
 ```
+
+## Windows PowerShell 5.1
+
+Windows PowerShell 5.1 drops the double quotes inside an argument, so JSON passed inline with
+`--body` arrives as invalid JSON. Pipe it to `--body-file -` instead, as the examples do.
+PowerShell 7.3 and later pass `--body` unchanged.
+
+If the JSON has characters outside ASCII, first run
+`$OutputEncoding = [System.Text.UTF8Encoding]::new()`, or they arrive as `?`.
 
 ## Error responses
 

@@ -1,16 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using Microsoft.Extensions.Configuration;
-using Microsoft.Identity.Client;
-using Moq;
 using System.CommandLine;
 using System.Net;
 using System.Text.Json;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Output;
 using XboxDevCLI.PlayFab.Commands;
-using XboxDevCLI.Services;
 using Xunit;
 
 namespace XboxDevCLI.UnitTest;
@@ -87,17 +83,17 @@ public class ServicePrincipalCommandTests
     [Fact]
     public async Task RunListAsync_MapsPagingAndTrimsStudio()
     {
-        var handler = new CaptureHandler(
-            """{"code":200,"status":"OK","data":{"ServicePrincipals":[],"ContinuationToken":"next"}}""");
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(
+            """{"code":200,"status":"OK","data":{"ServicePrincipals":[],"ContinuationToken":"next"}}"""));
+        using var client = PlayFabTestClient.Create(handler);
         var stdout = new StringWriter();
 
         var exit = await ServicePrincipalCommandFactory.RunListAsync(
             client, $" {StudioId} ", 25, "token", OutputOptions.Json, stdout, new StringWriter(), CancellationToken.None);
 
         Assert.Equal(0, exit);
-        Assert.EndsWith(ServicePrincipalCommandFactory.ListPath, handler.RequestUri);
-        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.EndsWith(ServicePrincipalCommandFactory.ListPath, handler.LastRequestUri);
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
         Assert.Equal(StudioId, body.RootElement.GetProperty("StudioId").GetString());
         Assert.Equal(25, body.RootElement.GetProperty("PageSize").GetDouble());
         Assert.Equal("token", body.RootElement.GetProperty("ContinuationToken").GetString());
@@ -109,37 +105,37 @@ public class ServicePrincipalCommandTests
     [InlineData(101)]
     public async Task RunListAsync_LimitOutOfRange_FailsWithoutCalling(int limit)
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         var stderr = new StringWriter();
 
         var exit = await ServicePrincipalCommandFactory.RunListAsync(
             client, StudioId, limit, null, OutputOptions.Json, new StringWriter(), stderr, CancellationToken.None);
 
         Assert.Equal(1, exit);
-        Assert.Null(handler.RequestUri);
+        Assert.Null(handler.LastRequest);
         Assert.Contains("--limit", stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task RunGetAsync_MapsIdentifiers()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
 
         var exit = await ServicePrincipalCommandFactory.RunGetAsync(
             client, StudioId, TenantId, ObjectId, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None);
 
         Assert.Equal(0, exit);
-        Assert.EndsWith(ServicePrincipalCommandFactory.GetPath, handler.RequestUri);
-        AssertIdentifiers(handler.Body!);
+        Assert.EndsWith(ServicePrincipalCommandFactory.GetPath, handler.LastRequestUri);
+        AssertIdentifiers(handler.LastRequestBody!);
     }
 
     [Fact]
     public async Task RunSetAsync_SendsCompleteGrantSet()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile(ValidGrants);
 
         var exit = await ServicePrincipalCommandFactory.RunSetAsync(
@@ -147,9 +143,9 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None);
 
         Assert.Equal(0, exit);
-        Assert.EndsWith(ServicePrincipalCommandFactory.SetPath, handler.RequestUri);
-        AssertIdentifiers(handler.Body!);
-        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.EndsWith(ServicePrincipalCommandFactory.SetPath, handler.LastRequestUri);
+        AssertIdentifiers(handler.LastRequestBody!);
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
         var root = body.RootElement;
         Assert.False(root.TryGetProperty("ClientId", out _));
         Assert.Equal("Nod Publishers build", root.GetProperty("DisplayName").GetString());
@@ -174,8 +170,8 @@ public class ServicePrincipalCommandTests
             "data" => """{"ServicePrincipal":""" + principal + "}",
             _ => principal,
         };
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile(json);
 
         var exit = await ServicePrincipalCommandFactory.RunSetAsync(
@@ -183,7 +179,7 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None);
 
         Assert.Equal(0, exit);
-        using var body = JsonDocument.Parse(handler.Body!);
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
         var root = body.RootElement;
         Assert.Equal(3, root.GetProperty("ExpectedVersion").GetDouble());
         Assert.Equal(TenantId, root.GetProperty("TenantId").GetString());
@@ -196,8 +192,8 @@ public class ServicePrincipalCommandTests
     [Fact]
     public async Task RunSetAsync_ExpectedVersionWithoutFileVersion_IsSent()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile(ValidGrants);
 
         var exit = await ServicePrincipalCommandFactory.RunSetAsync(
@@ -205,7 +201,7 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None);
 
         Assert.Equal(0, exit);
-        using var body = JsonDocument.Parse(handler.Body!);
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
         Assert.Equal(0, body.RootElement.GetProperty("ExpectedVersion").GetDouble());
     }
 
@@ -218,8 +214,8 @@ public class ServicePrincipalCommandTests
     [InlineData("\"Version\":null", -1.0, "--expected-version must be")]
     public async Task RunSetAsync_FileDisagreesWithOptions_FailsWithoutCalling(string field, double? expectedVersion, string expected)
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile($$"""{{{field}},"StudioPermissions":[],"TitleGrants":[]}""");
         var stderr = new StringWriter();
 
@@ -228,15 +224,15 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), stderr, CancellationToken.None);
 
         Assert.Equal(1, exit);
-        Assert.Null(handler.RequestUri);
+        Assert.Null(handler.LastRequest);
         Assert.Contains(expected, stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task RunSetAsync_MismatchedDisplayName_StripsControlCharactersFromTheError()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile("""{"DisplayName":"Old\u001b[31m\nError: forged","StudioPermissions":[],"TitleGrants":[]}""");
         var stderr = new StringWriter();
 
@@ -252,8 +248,8 @@ public class ServicePrincipalCommandTests
     [Fact]
     public async Task RunSetAsync_MissingFile_FailsWithoutCalling()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         var stderr = new StringWriter();
         var missing = Path.Combine(Path.GetTempPath(), $"xdc-missing-{Guid.NewGuid():N}", "grants.json");
 
@@ -262,15 +258,15 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), stderr, CancellationToken.None);
 
         Assert.Equal(1, exit);
-        Assert.Null(handler.RequestUri);
+        Assert.Null(handler.LastRequest);
         Assert.Contains("File not found", stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task RunSetAsync_InvalidGrants_FailsWithoutCalling()
     {
-        var handler = new CaptureHandler(AccessEnvelope);
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(AccessEnvelope));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile("""{"StudioPermissions":[]}""");
         var stderr = new StringWriter();
 
@@ -279,17 +275,17 @@ public class ServicePrincipalCommandTests
             OutputOptions.Json, new StringWriter(), stderr, CancellationToken.None);
 
         Assert.Equal(1, exit);
-        Assert.Null(handler.RequestUri);
+        Assert.Null(handler.LastRequest);
         Assert.Contains("TitleGrants", stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task RunSetAsync_ApiError_ReturnsOneOnStderr()
     {
-        var handler = new CaptureHandler(
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json(
             """{"code":403,"status":"Forbidden","error":"NotAuthorized","errorCode":1089,"errorMessage":"denied"}""",
-            HttpStatusCode.Forbidden);
-        using var client = CreateClient(handler);
+            HttpStatusCode.Forbidden));
+        using var client = PlayFabTestClient.Create(handler);
         using var file = new TempFile(ValidGrants);
         var stdout = new StringWriter();
         var stderr = new StringWriter();
@@ -349,8 +345,8 @@ public class ServicePrincipalCommandTests
     [Fact]
     public async Task RunRevokeAsync_Unconfirmed_IsRefusedBeforeSending()
     {
-        var handler = new CaptureHandler("""{"code":200,"status":"OK","data":{}}""");
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json("""{"code":200,"status":"OK","data":{}}"""));
+        using var client = PlayFabTestClient.Create(handler);
         var stderr = new StringWriter();
 
         var exit = await ServicePrincipalCommandFactory.RunRevokeAsync(
@@ -358,23 +354,23 @@ public class ServicePrincipalCommandTests
             CancellationToken.None, confirmed: false);
 
         Assert.Equal(1, exit);
-        Assert.Null(handler.RequestUri);
+        Assert.Null(handler.LastRequest);
         Assert.Contains(ServicePrincipalCommandFactory.DeletePath, stderr.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task RunRevokeAsync_Confirmed_SendsDelete()
     {
-        var handler = new CaptureHandler("""{"code":200,"status":"OK","data":{}}""");
-        using var client = CreateClient(handler);
+        var handler = new MockHttpMessageHandler(RoutingHttpHandler.Json("""{"code":200,"status":"OK","data":{}}"""));
+        using var client = PlayFabTestClient.Create(handler);
 
         var exit = await ServicePrincipalCommandFactory.RunRevokeAsync(
             client, StudioId, TenantId, ObjectId, OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None, confirmed: true);
 
         Assert.Equal(0, exit);
-        Assert.EndsWith(ServicePrincipalCommandFactory.DeletePath, handler.RequestUri);
-        AssertIdentifiers(handler.Body!);
+        Assert.EndsWith(ServicePrincipalCommandFactory.DeletePath, handler.LastRequestUri);
+        AssertIdentifiers(handler.LastRequestBody!);
     }
 
     #endregion
@@ -432,46 +428,6 @@ public class ServicePrincipalCommandTests
         Assert.Equal(StudioId, body.RootElement.GetProperty("StudioId").GetString());
         Assert.Equal(TenantId, body.RootElement.GetProperty("TenantId").GetString());
         Assert.Equal(ObjectId, body.RootElement.GetProperty("ObjectId").GetString());
-    }
-
-    private static PlayFabApiClient CreateClient(HttpMessageHandler handler)
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["AzureAd:ClientId"] = "test-client-id",
-                ["AzureAd:TenantId"] = "test-tenant-id",
-                ["AzureAd:Scopes"] = "api://test/.default",
-            })
-            .Build();
-        var auth = new Mock<AuthenticationService>(config) { CallBase = false };
-        auth.Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>())).ReturnsAsync(new AuthenticationResult(
-            accessToken: "token",
-            isExtendedLifeTimeToken: false,
-            uniqueId: "test-unique-id",
-            expiresOn: DateTimeOffset.UtcNow.AddHours(1),
-            extendedExpiresOn: DateTimeOffset.UtcNow.AddHours(1),
-            tenantId: "test-tenant-id",
-            account: Mock.Of<IAccount>(),
-            idToken: "test-id-token",
-            scopes: ["api://test/.default"],
-            correlationId: Guid.NewGuid()));
-        var httpClient = new HttpClient(handler);
-        return new PlayFabApiClient(config, auth.Object, httpClient);
-    }
-
-    private sealed class CaptureHandler(string responseJson, HttpStatusCode status = HttpStatusCode.OK) : HttpMessageHandler
-    {
-        public string? RequestUri { get; private set; }
-
-        public string? Body { get; private set; }
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            RequestUri = request.RequestUri?.AbsolutePath;
-            Body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(status) { Content = new StringContent(responseJson) };
-        }
     }
 
     private sealed class TempFile : IDisposable

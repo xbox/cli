@@ -29,6 +29,10 @@ what the CLI asks about and what it doesn't. The rest is up to you:
 - Ask before `xbox pc sandbox set`, which switches the sandbox for everyone on the PC, and
   before `xbox pc sandbox launch-apps`, which closes the Microsoft Store and XBOX app.
 - Don't add `--confirm` (or `--yes`) in place of asking. The CLI can't tell who added it.
+- Before asking to run `xbox audience update` with `--members-file`, run it with `--dry-run`
+  and show the user the members it adds and removes. `--members-file` replaces the whole list.
+- Before asking to run `xbox xbl relying-party save` with `--claim`, run `xbox xbl relying-party get`
+  and show the user the claims the save removes. `--claim` replaces the whole list.
 - Before asking to publish to RETAIL with `xbox xbl config publish`, run it with
   `--validate-only` and show the user the achievements it lists. Then publish with
   `--configset` set to the `SourceVersion` in its JSON output. Achievements in RETAIL can't be
@@ -84,10 +88,11 @@ Help marks **Experimental** commands, whose interface might change. See
 
 ### Rate limits
 
-When an XBOX service answers HTTP 429, wait before trying again; the CLI doesn't retry for
-you. When the service specifies a wait, the error says how many seconds, and structured errors
-also carry it as `retryAfterSeconds`. A 429 with error code `rate_limited` means you sent too
-many requests in a short time, so slow down.
+When an XBOX service answers HTTP 429, wait before trying again; the CLI doesn't resend a
+request that got a 429, though commands that wait for an operation to finish retry a few
+throttled status reads before giving up. When the service specifies a wait, the error says how
+many seconds, and structured errors also carry it as `retryAfterSeconds`. A 429 with error code
+`rate_limited` means you sent too many requests in a short time, so slow down.
 
 ## Finding the right PlayFab API
 

@@ -27,5 +27,19 @@ options and output might change or be removed; see
 
 ## Exit codes
 
-Help writes to stdout and exits `0`. An unknown command writes an error and usage to stderr,
-writes nothing to stdout, and exits `1`.
+Help writes to stdout and exits `0`. A usage error, such as an unknown command or option or a
+missing required option, writes the error and usage to stderr, writes nothing to stdout, and
+exits `1`. An unknown command also lists the commands available at that level; any other usage
+error ends with the `xbox help` command to run for more.
+
+```text
+$ xbox completion nope
+Argument 'nope' not recognized. Must be one of:
+	'bash'
+	'zsh'
+	'fish'
+	'powershell'
+
+Usage:  xbox completion <shell> [flags]
+Run 'xbox help completion' for more.
+```

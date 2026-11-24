@@ -15,6 +15,8 @@ namespace XboxDevCLI.UnitTest;
 [Collection("ConsoleRedirect")]
 public class XboxPartnerCommandTests
 {
+    private const string Scid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
     [Theory]
     [InlineData("seller", "list")]
     [InlineData("game", "list")]
@@ -37,14 +39,10 @@ public class XboxPartnerCommandTests
         Assert.Contains("The request was throttled. Try again in 30 seconds.", result.Stderr, StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task SellerList_UnexpectedFailurePrintsOnlyTheMessage(bool authenticationFailure)
+    [Fact]
+    public async Task SellerList_AuthenticationFailurePrintsOnlyTheMessage()
     {
-        Exception exception = authenticationFailure
-            ? new MsalServiceException("invalid_client", "AADSTS7000215: Invalid client secret.")
-            : new NotSupportedException("The credential provider is unavailable.");
+        var exception = new MsalServiceException("invalid_client", "AADSTS7000215: Invalid client secret.");
         var client = new FakeXboxPartnerClient { Exception = exception };
 
         var result = await InvokeAsync(client, ["seller", "list"]);
@@ -52,6 +50,100 @@ public class XboxPartnerCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Equal(exception.Message + Environment.NewLine, result.Stderr);
+    }
+
+    /// <summary>
+    /// A bug, such as using a disposed object, isn't reported as a failed request. It reaches the error
+    /// boundary, which leaves it to System.CommandLine to report with its stack trace.
+    /// </summary>
+    [Theory]
+    [InlineData("xbl", "config", "status", "--scid", Scid, "--sandbox-id", "XDKS.1")]
+    [InlineData("xbl", "config", "list", "--scid", Scid)]
+    [InlineData("xbl", "config", "diff", "--scid", Scid, "--sandbox-id", "XDKS.1")]
+    [InlineData("xbl", "config", "history", "--scid", Scid, "--sandbox-id", "XDKS.1")]
+    [InlineData("xbl", "schema", "get", "--type", "userstats")]
+    [InlineData("xbl", "schema", "list")]
+    [InlineData("seller", "list")]
+    public async Task ABugIsReportedWithItsStackTrace(params string[] args)
+    {
+        var handler = new RoutingHttpHandler(_ => throw new ObjectDisposedException("client"));
+
+        var result = await InvokeAsync(handler, args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.StartsWith("Unhandled exception: System.ObjectDisposedException", result.Stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A schema type the client refuses, such as "..", is reported as a failed request rather than as a bug,
+    /// and nothing is sent.
+    /// </summary>
+    [Theory]
+    [InlineData("get")]
+    [InlineData("list")]
+    public async Task SchemaTypeTheClientRefuses_IsReportedAsAFailedRequest(string command)
+    {
+        var handler = new RoutingHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+
+        var result = await InvokeAsync(handler, ["xbl", "schema", command, "--type", ".."]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Equal(
+            "Request failed: Schema type must be a non-empty path segment other than '.' or '..'. (Parameter 'schemaType')"
+                + Environment.NewLine,
+            result.Stderr);
+        Assert.Empty(handler.Requests);
+    }
+
+    /// <summary>
+    /// A request that times out is still reported by the command, after the correlation ID it was sent with.
+    /// </summary>
+    [Theory]
+    [InlineData("Request timed out.", "xbl", "config", "status", "--scid", Scid, "--sandbox-id", "XDKS.1")]
+    [InlineData("Request timed out.", "xbl", "config", "list", "--scid", Scid)]
+    [InlineData("Request failed: ", "xbl", "schema", "get", "--type", "userstats")]
+    [InlineData("Request failed: ", "xbl", "schema", "list")]
+    public async Task ATimeoutIsReportedAsAFailedRequest(string reason, params string[] args)
+    {
+        var handler = new RoutingHttpHandler(_ => throw new TaskCanceledException("timeout"));
+
+        var result = await InvokeAsync(handler, args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        string correlationId = Assert.Single(Assert.Single(handler.Requests).Headers[XboxPartnerClient.CorrelationIdHeader]);
+        Assert.StartsWith(
+            $"x-ms-correlation-id: {correlationId}{Environment.NewLine}{reason}", result.Stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>A schema command writes a failure's message the way the error boundary does, without escape sequences.</summary>
+    [Fact]
+    public async Task SchemaFailure_IsWrittenSafelyForTheTerminal()
+    {
+        var handler = new RoutingHttpHandler(_ => throw new HttpRequestException("The connection was reset.\u001b[2J"));
+
+        var result = await InvokeAsync(handler, ["xbl", "schema", "get", "--type", "userstats"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.EndsWith(
+            $"Request failed: The connection was reset.[2J{Environment.NewLine}", result.Stderr, StringComparison.Ordinal);
+    }
+
+    /// <summary>A schema list that isn't the JSON expected is an unreadable response, reported as a failed request.</summary>
+    [Theory]
+    [InlineData("null", "xbl", "schema", "get", "--type", "userstats")]
+    [InlineData("<html>", "xbl", "schema", "list")]
+    public async Task SchemaListThatIsNotJson_IsReportedAsAFailedRequest(string body, params string[] args)
+    {
+        var handler = new RoutingHttpHandler(_ => RoutingHttpHandler.Json(body));
+
+        var result = await InvokeAsync(handler, args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.StartsWith("Request failed: ", result.Stderr, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -68,6 +160,29 @@ public class XboxPartnerCommandTests
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Equal("The request timed out." + Environment.NewLine, result.Stderr);
+    }
+
+    [Theory]
+    [InlineData(true, "seller", "list")]
+    [InlineData(false, "seller", "list")]
+    [InlineData(true, "game", "get", "1234ABCD")]
+    [InlineData(false, "game", "get", "1234ABCD")]
+    public async Task TransportFailure_PrintsTheSentCorrelationId(bool timeout, params string[] args)
+    {
+        Exception exception = timeout
+            ? new TaskCanceledException("Transport timeout.")
+            : new HttpRequestException("The connection was reset.");
+        exception.Data[XboxPartnerClient.CorrelationIdHeader] = "sent-correlation";
+        var client = new FakeXboxPartnerClient { Exception = exception };
+
+        var result = await InvokeAsync(
+            client, args[0] == "game" ? [.. args, "--seller-id", "1234567"] : args);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.StartsWith(
+            "x-ms-correlation-id: sent-correlation" + Environment.NewLine, result.Stderr, StringComparison.Ordinal);
+        Assert.Contains(timeout ? "The request timed out." : "The connection was reset.", result.Stderr, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -399,11 +514,41 @@ public class XboxPartnerCommandTests
 
     private sealed record CapturedInvocation(int ExitCode, string Stdout, string Stderr);
 
+    /// <summary>
+    /// Runs <paramref name="args"/> through the root command, with every XBOX services client sending its
+    /// requests to <paramref name="handler"/>.
+    /// </summary>
+    private static async Task<CapturedInvocation> InvokeAsync(HttpMessageHandler handler, string[] args)
+    {
+        using var httpClient = new HttpClient(handler);
+        XboxPartnerClient CreateClient(IConfiguration configuration) =>
+            new(configuration, httpClient, () => Task.FromResult<string?>("caller-token"));
+        var originalOut = Console.Out;
+        var originalError = Console.Error;
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
+        Program.XboxPartnerClientFactory = CreateClient;
+        try
+        {
+            var root = Program.BuildRootCommand(() => SellerCommandFactory.Create(CreateClient));
+            var exitCode = await root.Parse(args, Program.NoResponseFileConfig).InvokeAsync();
+            return new CapturedInvocation(exitCode, stdout.ToString(), stderr.ToString());
+        }
+        finally
+        {
+            Program.XboxPartnerClientFactory = null;
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+        }
+    }
+
     private sealed class FakeXboxPartnerClient : IXboxPartnerClient
     {
         public Task<XboxPartnerGameCreationJob> CreateGameAsync(
             string baseUrl, string sellerId, CreateXboxGameRequest request,
-            CancellationToken cancellationToken = default, Action? onSending = null) =>
+            CancellationToken cancellationToken = default, Action<string>? onSending = null) =>
             throw new NotSupportedException();
 
         public Task<XboxPartnerGameCreationJob> GetGameCreationJobAsync(

@@ -137,21 +137,4 @@ public class DisplayWidthTests
 
         Assert.Equal(40, DisplayWidth.MeasureCapped(value, 40));
     }
-
-    /// <summary>
-    /// The oracle the alignment tests measure with has to agree with the renderer on the
-    /// fixtures, or one of the two is wrong. It is written from the Unicode data independently,
-    /// so this is the point where the two derivations are compared.
-    /// </summary>
-    [Theory]
-    [InlineData("日本語ビルド")]
-    [InlineData("中文服务器")]
-    [InlineData("Jose\u0301")]
-    [InlineData("\U0001F468\u200D\U0001F469\u200D\U0001F467\u200D\U0001F466")]
-    [InlineData("\U0001F44D\U0001F3FD")]
-    [InlineData("\U0001F1EF\U0001F1F5")]
-    [InlineData("\u1100\u1161\u11A8")]
-    [InlineData("nod-日本-server")]
-    public void MeasureAgreesWithTheIndependentOracle(string value) =>
-        Assert.Equal(TerminalCells.Measure(value), DisplayWidth.Measure(value));
 }

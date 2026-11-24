@@ -27,6 +27,17 @@ internal sealed class CommandHelpAction(RootCommand rootCommand, string cliName)
     {
         ArgumentNullException.ThrowIfNull(parseResult);
 
+        // After a parse error, the parser has already written the errors, so add only the usage.
+        if (parseResult.Action is ParseErrorAction)
+        {
+            CommandLineErrorWriter.WriteUsage(
+                rootCommand,
+                parseResult.CommandResult.Command,
+                cliName,
+                parseResult.InvocationConfiguration.Error);
+            return 1;
+        }
+
         if (CommandLineErrorWriter.TryWriteUnknownCommand(
                 parseResult,
                 rootCommand,

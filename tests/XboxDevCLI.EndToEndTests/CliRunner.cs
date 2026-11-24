@@ -128,9 +128,14 @@ internal sealed class CliRunner : IDisposable
             environment[name] = value;
         }
 
-        environment["XBOX_AUTHENTICATION__MODE"] = "githuboidc";
-        environment[LiveSettings.ClientIdVariable] = settings.ClientId;
-        environment[LiveSettings.TenantIdVariable] = settings.TenantId;
+        environment["XBOX_AUTHENTICATION__MODE"] = settings.AuthenticationMode;
+
+        // In azurecli mode the CLI rejects these settings: Azure CLI's session names the identity.
+        if (settings.AuthenticationMode == LiveSettings.GitHubOidcMode)
+        {
+            environment[LiveSettings.ClientIdVariable] = settings.ClientId;
+            environment[LiveSettings.TenantIdVariable] = settings.TenantId;
+        }
         environment[LiveSettings.ScopesVariable] = settings.Scope;
         environment[PlayFabBaseUrlTemplateVariable] = settings.Profile.PlayFab.BaseUrlTemplate;
         environment[PlayFabHostHeaderVariable] = settings.Profile.PlayFab.HostHeader ?? NoHostHeader;

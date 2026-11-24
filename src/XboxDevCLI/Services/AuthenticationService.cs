@@ -16,8 +16,7 @@ public sealed record LogoutResult(int RemovedAccountCount, IReadOnlyList<string>
 /// </summary>
 public class AuthenticationService
 {
-    internal const string LinuxUnencryptedCacheFallbackWarning =
-        "Warning: secure Linux keyring is unavailable. XboxDevCLI is using an unencrypted token cache file protected only by filesystem permissions.";
+    private const string CacheFileName = "xboxdevcli_tokencache.bin";
 
     private sealed record AuthenticationState(
         AutomationAuthenticationSettings Settings,
@@ -183,6 +182,18 @@ public class AuthenticationService
     /// </summary>
     public virtual async Task<AuthenticationResult?> AcquireTokenSilentAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            return await AcquireTokenWithoutPromptAsync(cancellationToken);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw NetworkErrors.WithCause(exception);
+        }
+    }
+
+    private async Task<AuthenticationResult?> AcquireTokenWithoutPromptAsync(CancellationToken cancellationToken)
+    {
         var state = _state;
         if (state.Settings.IsAutomation)
         {
@@ -302,7 +313,8 @@ public class AuthenticationService
     }
 
     /// <summary>
-    /// Removes every cached MSAL account, clearing the persisted token cache.
+    /// Removes every cached MSAL account, clearing the persisted token cache. On Linux, also
+    /// replaces the cache file with an empty one that only the user can read.
     /// </summary>
     public virtual async Task<LogoutResult> LogoutAsync(CancellationToken cancellationToken)
     {
@@ -316,6 +328,33 @@ public class AuthenticationService
         {
             await RemoveAccountAsync(app, account, cancellationToken);
             usernames.Add(account.Username);
+        }
+
+        // Without a keyring, this file holds the tokens in plain text. With a keyring, MSAL only
+        // updates its timestamp, so tokens from an earlier sign-in without one would stay, and
+        // sign the user in again whenever the keyring is unavailable. MSAL reads an empty file as
+        // an empty cache, and keeps an existing file's permissions when it writes, so the new file
+        // is owner-only. A write with the keyring creates a missing file readable by others, so
+        // the new file is renamed over the old one, and another process never finds it missing.
+        if (OperatingSystem.IsLinux())
+        {
+            var cacheFile = Path.Combine(CliState.GetDefaultDirectory(), CacheFileName);
+            var emptyFile = $"{cacheFile}.{Guid.NewGuid():N}.tmp";
+            new FileStream(emptyFile, new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            }).Dispose();
+            try
+            {
+                File.Move(emptyFile, cacheFile, overwrite: true);
+            }
+            finally
+            {
+                // Still there only when the move failed.
+                File.Delete(emptyFile);
+            }
         }
 
         return new LogoutResult(usernames.Count, usernames);
@@ -357,10 +396,9 @@ public class AuthenticationService
     /// </summary>
     private static async Task<MsalCacheHelper> CreateCacheHelperAsync()
     {
-        const string cacheFileName = "xboxdevcli_tokencache.bin";
         var cacheDir = CliState.GetDefaultDirectory();
 
-        var encryptedProperties = new StorageCreationPropertiesBuilder(cacheFileName, cacheDir)
+        var encryptedProperties = new StorageCreationPropertiesBuilder(CacheFileName, cacheDir)
             .WithLinuxKeyring(
                 schemaName: "com.xboxdevcli.tokencache",
                 collection: "default",
@@ -390,20 +428,16 @@ public class AuthenticationService
             // Windows (DPAPI) and macOS (Keychain) are unaffected — they don't hit this path.
             if (OperatingSystem.IsLinux())
             {
-                WriteLinuxUnencryptedCacheFallbackWarning(Console.Error);
+                Console.Error.WriteLine(
+                    "Warning: secure Linux keyring is unavailable. XboxDevCLI is using an unencrypted token cache file protected only by filesystem permissions.");
             }
 
-            var unencryptedProperties = new StorageCreationPropertiesBuilder(cacheFileName, cacheDir)
+            var unencryptedProperties = new StorageCreationPropertiesBuilder(CacheFileName, cacheDir)
                 .WithLinuxUnprotectedFile()
                 .WithMacKeyChain(serviceName: "XboxDevCLI", accountName: "MSALCache")
                 .Build();
 
             return await MsalCacheHelper.CreateAsync(unencryptedProperties);
         }
-    }
-
-    internal static void WriteLinuxUnencryptedCacheFallbackWarning(TextWriter stderr)
-    {
-        stderr.WriteLine(LinuxUnencryptedCacheFallbackWarning);
     }
 }

@@ -18,6 +18,8 @@ internal static class XboxLiveCommandFactory
             "Inspect, download, save, and publish XBOX services configuration");
         config.Subcommands.Add(ListConfigurationsCommandFactory.Create());
         config.Subcommands.Add(ConfigStatusCommandFactory.Create());
+        config.Subcommands.Add(ConfigDiffCommandFactory.Create());
+        config.Subcommands.Add(ConfigHistoryCommandFactory.Create());
         config.Subcommands.Add(GetDocumentsCommandFactory.Create());
         config.Subcommands.Add(CommitDocumentsCommandFactory.Create());
         config.Subcommands.Add(PublishCommandFactory.Create());
@@ -30,6 +32,11 @@ internal static class XboxLiveCommandFactory
         xboxLive.Subcommands.Add(schema);
 
         xboxLive.Subcommands.Add(AchievementImageCommandFactory.Create());
+        xboxLive.Subcommands.Add(XboxLiveBindingCommandFactory.Create());
+        xboxLive.Subcommands.Add(GlobalStorageCommandFactory.Create());
+        xboxLive.Subcommands.Add(XboxLiveWebServiceCommandFactory.Create());
+        xboxLive.Subcommands.Add(RelyingPartyCommandFactory.Create());
+        xboxLive.Subcommands.Add(BusinessPartnerCommandFactory.Create());
 
         return xboxLive.Requires(CommandRequirement.Authentication).Calls(ServiceEndpoints.XboxPartner);
     }

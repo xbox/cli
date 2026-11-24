@@ -70,9 +70,10 @@ internal static class GetSchemasCommandFactory
                     Console.Error,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
             {
-                Console.Error.WriteLine($"Request failed: {ex.Message}");
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
+                Console.Error.WriteLine($"Request failed: {TerminalText.Message(ex.Message)}");
                 return 1;
             }
         });
@@ -116,15 +117,16 @@ internal static class GetSchemasCommandFactory
         command.Options.Add(destinationOption);
         command.Validators.Add(result =>
         {
+            // Not GetValue, which throws for a missing or repeated value. The parser reports those.
             if (result.GetResult(versionOption) is { } version &&
                 ParsedVersion(version) is not null &&
-                string.IsNullOrWhiteSpace(result.GetValue(typeOption)))
+                result.GetResult(typeOption) is null)
             {
                 result.AddError("--version requires --type.");
             }
 
-            if (result.GetValue(destinationOption) == StdoutDestination &&
-                (string.IsNullOrWhiteSpace(result.GetValue(typeOption)) ||
+            if (result.GetResult(destinationOption)?.Tokens is [{ Value: StdoutDestination }] &&
+                (result.GetResult(typeOption) is null ||
                     result.GetResult(versionOption) is not { } givenVersion ||
                     ParsedVersion(givenVersion) is null))
             {
@@ -199,13 +201,24 @@ internal static class GetSchemasCommandFactory
                     rawStdout,
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
             {
-                Console.Error.WriteLine($"Request failed: {ex.Message}");
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
+                Console.Error.WriteLine($"Request failed: {TerminalText.Message(ex.Message)}");
                 return 1;
             }
         });
     }
+
+    /// <summary>
+    /// Whether a schema command reports <paramref name="exception"/> as a failed request: a failure the
+    /// error boundary expects, a timeout, a schema list that isn't the JSON expected, or a schema type the
+    /// client refuses, such as "..". Ctrl+C and bugs reach the boundary instead.
+    /// </summary>
+    private static bool IsRequestFailure(Exception exception, CancellationToken cancellationToken) =>
+        !cancellationToken.IsCancellationRequested
+        && (CommandErrorBoundary.IsExpected(exception)
+            || exception is OperationCanceledException or JsonException or ArgumentException { ParamName: "schemaType" });
 
     private static XboxPartnerClient CreateClient(ParseResult parseResult)
     {
@@ -277,9 +290,10 @@ internal static class GetSchemasCommandFactory
             stderr.WriteLine(XboxPartnerCommandErrorFormatter.Format(ex, output.IsCompact));
             return 1;
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
         {
-            stderr.WriteLine($"Request failed: {ex.Message}");
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
+            stderr.WriteLine($"Request failed: {TerminalText.Message(ex.Message)}");
             return 1;
         }
     }
@@ -431,9 +445,10 @@ internal static class GetSchemasCommandFactory
             stderr.WriteLine(XboxPartnerCommandErrorFormatter.Format(ex, compact));
             return 1;
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
         {
-            stderr.WriteLine($"Request failed: {ex.Message}");
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
+            stderr.WriteLine($"Request failed: {TerminalText.Message(ex.Message)}");
             return 1;
         }
     }

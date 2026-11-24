@@ -21,9 +21,9 @@ public sealed partial class DocumentedCommandsTests
     {
         var root = Program.BuildRootCommand();
         var problems = DocumentedCommands()
-            .Select(documented => (documented, Problem: Check(root, documented.Tokens)))
+            .Select(documented => (documented, Problem: Problem(root, documented.Text)))
             .Where(result => result.Problem is not null)
-            .Select(result => $"{result.documented.File}:{result.documented.Line}: `{string.Join(' ', result.documented.Tokens)}` {result.Problem}")
+            .Select(result => $"{result.documented.File}:{result.documented.Line}: `{result.documented.Text}` {result.Problem}")
             .ToList();
 
         Assert.True(problems.Count == 0, "The docs name commands or options the CLI doesn't have:\n" + string.Join('\n', problems));
@@ -35,7 +35,13 @@ public sealed partial class DocumentedCommandsTests
     [InlineData("./xbox contxt get")]
     [InlineData("& \"$cliDir\\xbox.exe\" contxt get")]
     public void ChecksCommandLinesThatSetVariablesOrNameAPath(string commandLine) =>
-        Assert.Equal("has unknown `contxt get`.", Check(Program.BuildRootCommand(), CommandLine(commandLine)!));
+        Assert.Equal("has unknown `contxt get`.", Problem(Program.BuildRootCommand(), commandLine));
+
+    [Theory]
+    [InlineData("'{\"Keys\":[\"MyKey\"]}' | xbox contxt get")]
+    [InlineData("echo '{\"Keys\":[\"MyKey\"]}' | xbox contxt get")]
+    public void ChecksCommandsThatInputIsPipedInto(string commandLine) =>
+        Assert.Equal("has unknown `contxt get`.", Problem(Program.BuildRootCommand(), commandLine));
 
     [Theory]
     [InlineData("xbox-win-x64.zip")]
@@ -50,7 +56,7 @@ public sealed partial class DocumentedCommandsTests
     [InlineData("xbox --playfab-title-id <TITLE_ID> playfab api /Admin/GetTitleData", null)]
     [InlineData("xbox game list --output table --verbose", null)]
     [InlineData("xbox playfab <service> --help", null)]
-    [InlineData("xbox xbl config download --type account --view draft --dest out --document a.xml b.xml", null)]
+    [InlineData("xbox xbl config download --scope account --view draft --dest out --document a.xml b.xml", null)]
     [InlineData("xbox playfab mps build get --body-file -", null)]
     [InlineData("xbox playfab api -- /Admin/GetTitleData", null)]
     [InlineData("xbox playfab api -- --not-an-option", null)]
@@ -72,15 +78,35 @@ public sealed partial class DocumentedCommandsTests
     [InlineData("xbox contxt get", "has unknown `contxt get`.")]
     [InlineData("xbox game list --format table", "has unknown `--format table`.")]
     public void ChecksCommandsAndOptionsButNotValues(string commandLine, string? problem) =>
-        Assert.Equal(problem, Check(Program.BuildRootCommand(), CommandLine(commandLine)!));
+        Assert.Equal(problem, Problem(Program.BuildRootCommand(), commandLine));
+
+    [Theory]
+    [InlineData("xbox game list \\")]
+    [InlineData("xbox game list `")]
+    [InlineData("jq -n '{}' \\")]
+    [InlineData("xbox game list | \\")]
+    [InlineData("xbox game list > games.json \\")]
+    public void FailsOnLineContinuations(string line) =>
+        Assert.Equal("continues on the next line. Keep each command on one line, so it works in every shell.", Problem(Program.BuildRootCommand(), line));
 
     /// <summary>
-    /// The tokens the CLI's parser doesn't recognize, other than placeholders, or
-    /// <see langword="null"/> if it recognizes them all. <c>xbox help</c> is checked as the
-    /// command it names, with <c>--help</c>.
+    /// What's wrong with a documented line: that it continues on the next line, or the tokens
+    /// of its <c>xbox</c> command the CLI's parser doesn't recognize, other than placeholders.
+    /// <see langword="null"/> if nothing is. <c>xbox help</c> is checked as the command it
+    /// names, with <c>--help</c>.
     /// </summary>
-    private static string? Check(Command root, IReadOnlyList<string> tokens)
+    private static string? Problem(Command root, string text)
     {
+        if (ContinuesOnNextLine(text))
+        {
+            return "continues on the next line. Keep each command on one line, so it works in every shell.";
+        }
+
+        if (CommandLine(text) is not { } tokens)
+        {
+            return null;
+        }
+
         var args = tokens.Skip(1).ToList();
         if (args is ["help", ..])
         {
@@ -95,8 +121,15 @@ public sealed partial class DocumentedCommandsTests
     private static bool IsPlaceholder(string token) =>
         !token.StartsWith('-') && (token.IndexOfAny(['<', '[', '{', '$', '*']) >= 0 || token.Contains("...", StringComparison.Ordinal));
 
-    /// <summary>Every <c>xbox</c> command line in the docs, with where it is.</summary>
-    private static IEnumerable<(string File, int Line, IReadOnlyList<string> Tokens)> DocumentedCommands()
+    // A line ending in a space and `\` or a backtick continues in bash or PowerShell, but not in the other.
+    private static bool ContinuesOnNextLine(string text) =>
+        text.TrimEnd() is var trimmed && (trimmed.EndsWith(" \\", StringComparison.Ordinal) || trimmed.EndsWith(" `", StringComparison.Ordinal));
+
+    /// <summary>
+    /// Every <c>xbox</c> command line in the docs, and every line in a code block that continues
+    /// on the next line, with where it is.
+    /// </summary>
+    private static IEnumerable<(string File, int Line, string Text)> DocumentedCommands()
     {
         var repository = RepositoryRoot();
 
@@ -127,16 +160,9 @@ public sealed partial class DocumentedCommandsTests
                 if (fence is not null)
                 {
                     var command = Prompt().Replace(trimmed, "");
-                    var start = i;
-                    // A line ending in a space and a backslash, or in PowerShell a backtick, continues on the next.
-                    while ((command.EndsWith(" \\", StringComparison.Ordinal) || command.EndsWith(" `", StringComparison.Ordinal)) && i + 1 < lines.Length)
+                    if (ContinuesOnNextLine(command) || CommandLine(command) is not null)
                     {
-                        command = command[..^1] + lines[++i].Trim();
-                    }
-
-                    if (CommandLine(command) is { } tokens)
-                    {
-                        yield return (relative, start + 1, tokens);
+                        yield return (relative, i + 1, command);
                     }
 
                     continue;
@@ -144,9 +170,9 @@ public sealed partial class DocumentedCommandsTests
 
                 foreach (Match span in CodeSpan().Matches(line))
                 {
-                    if (CommandLine(span.Groups[1].Value) is { } tokens)
+                    if (CommandLine(span.Groups[1].Value) is not null)
                     {
-                        yield return (relative, i + 1, tokens);
+                        yield return (relative, i + 1, span.Groups[1].Value);
                     }
                 }
             }
@@ -155,11 +181,14 @@ public sealed partial class DocumentedCommandsTests
 
     /// <summary>
     /// The words of a command line that runs <c>xbox</c>, starting with <c>xbox</c>, or
-    /// <see langword="null"/> if it doesn't run it. Environment variables set before it, and a
-    /// path to it, like <c>./xbox</c> or <c>.\xbox.exe</c>, are left out.
+    /// <see langword="null"/> if it doesn't run it. Environment variables set before it, a path
+    /// to it, like <c>./xbox</c> or <c>.\xbox.exe</c>, and a command piped into it are left out.
     /// </summary>
-    private static List<string>? CommandLine(string text) =>
-        Invocation().Match(text) is { Success: true } invocation ? ["xbox", .. Tokenize(text[invocation.Length..])] : null;
+    private static List<string>? CommandLine(string text)
+    {
+        text = PipedIntoXbox().Replace(text, "");
+        return Invocation().Match(text) is { Success: true } invocation ? ["xbox", .. Tokenize(text[invocation.Length..])] : null;
+    }
 
     /// <summary>Splits a shell command line into words, honoring quotes, up to an unquoted pipe, redirection, separator, or comment.</summary>
     private static List<string> Tokenize(string commandLine)
@@ -245,6 +274,9 @@ public sealed partial class DocumentedCommandsTests
 
     [GeneratedRegex("""^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:&\s*)?(?:"[^"]*[\\/]|'[^']*[\\/]|[^\s"']*[\\/])?xbox(?:\.exe)?["']?(?:\s+|$)""")]
     private static partial Regex Invocation();
+
+    [GeneratedRegex("""^(?:[^'"|]|'[^']*'|"[^"]*")*\|\s*(?=(?:\S*[\\/])?xbox\b)""")]
+    private static partial Regex PipedIntoXbox();
 
     [GeneratedRegex(@"\G<[^\s<>]+>")]
     private static partial Regex Placeholder();

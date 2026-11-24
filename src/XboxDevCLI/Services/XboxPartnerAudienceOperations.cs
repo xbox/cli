@@ -21,7 +21,6 @@ internal sealed partial class XboxPartnerClient
         string sellerId,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
         var uri = BuildRequestUri(baseUrl, AudiencesPath + SellerQuery(sellerId));
         var response = await SendAuthorizedAsync(uri, sellerId: null, cancellationToken, HttpMethod.Get);
         try
@@ -50,7 +49,6 @@ internal sealed partial class XboxPartnerClient
         string audienceId,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(audienceId);
         if (IsDotSegment(audienceId))
         {
@@ -85,8 +83,6 @@ internal sealed partial class XboxPartnerClient
         CancellationToken cancellationToken = default,
         Action? onSending = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(members);
         var body = new JsonObject { ["name"] = name, ["members"] = MembersJson(members) };
         var uri = BuildRequestUri(baseUrl, AudiencesPath + SellerQuery(sellerId));
@@ -109,21 +105,10 @@ internal sealed partial class XboxPartnerClient
         CancellationToken cancellationToken = default,
         Action? onSending = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(audienceId);
         if (IsDotSegment(audienceId))
         {
             throw new ArgumentException("The audience ID can't be '.' or '..'.", nameof(audienceId));
-        }
-
-        if (name is null && members is null)
-        {
-            throw new ArgumentException("An update must change the name, the members, or both.");
-        }
-
-        if (name is not null)
-        {
-            ArgumentException.ThrowIfNullOrWhiteSpace(name);
         }
 
         var body = new JsonObject();
@@ -153,7 +138,6 @@ internal sealed partial class XboxPartnerClient
         Action? onSending,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(correlationId);
         var response = await SendAuthorizedAsync(
             uri, sellerId: null, cancellationToken, method, body.ToJsonString(), correlationId, onSending);
         try
@@ -219,7 +203,9 @@ internal sealed partial class XboxPartnerClient
 /// <param name="Id">The audience ID, an opaque string. Pass it to <c>get</c> unchanged.</param>
 /// <param name="Name">The audience name, or null.</param>
 /// <param name="GroupType">The service's group type, such as <c>User</c>, or null.</param>
+/// <param name="Members">The stored members, which only <c>get</c> and writes return.</param>
 internal sealed record XboxPartnerAudience(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("name")] string? Name,
-    [property: JsonPropertyName("groupType")] string? GroupType);
+    [property: JsonPropertyName("groupType")] string? GroupType,
+    [property: JsonPropertyName("members")] IReadOnlyList<string>? Members = null);

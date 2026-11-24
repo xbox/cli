@@ -3,15 +3,26 @@
 
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Xml;
 using System.Xml.Linq;
+using Xunit.Abstractions;
+using Xunit.Sdk;
 
 namespace XboxDevCLI.E2ETest;
 
-public class XblTests
+public class XblTests(ITestOutputHelper output)
 {
     private const string SchemaType = "achievements2017";
+
+    // The global storage lifecycle test names each file this, the UTC time it was made, and .json, so a later run can
+    // find one it left. Other tests can use the same sandbox, so it keeps to a folder of its own.
+    private const string StorageFolder = "xboxdevcli_e2e/";
+
+    private const string StorageFileName = StorageFolder + "lifecycle-";
+
+    private const string StorageFileTime = "yyyyMMdd'T'HHmmssfff'Z'";
 
     private static readonly XName XsdRoot = XName.Get("schema", "http://www.w3.org/2001/XMLSchema");
 
@@ -87,32 +98,54 @@ public class XblTests
     }
 
     [LiveFact]
-    public async Task ConfigList_IncludesTheSandbox()
+    public async Task ConfigList_IncludesTheSandboxAndTheTitle()
     {
         CliResult result = await Cli.RunForSellerAsync("xbl", "config", "list", "--scid", Settings.Scid);
 
+        JsonElement[] sets = [.. result.Json().Items()];
         result.Check(
-            result.Json().Items().Any(configuration => configuration.Is("sandbox", Settings.Sandbox)),
+            sets.Any(set => set.Is("scope", "sandbox") && set.Is("sandbox", Settings.Sandbox)),
             $"Expected {Settings.Sandbox}.");
+        result.Check(sets.Any(set => set.Is("scope", "title")), "Expected the title's configuration.");
     }
 
     [LiveFact]
-    public async Task ConfigStatus_ShowsPublishedConfigurationAndTheLastPublish()
+    public async Task ConfigStatus_ShowsTheLiveVersionAndTheLastPublish()
     {
         CliResult result = await Cli.RunForSellerAsync(
             "xbl", "config", "status", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox);
 
-        JsonElement configuration = result.Json();
-        result.Check(configuration.Is("sandbox", Settings.Sandbox), $"Expected {Settings.Sandbox}.");
+        JsonElement status = result.Json();
+        result.Check(status.Is("sandbox", Settings.Sandbox), $"Expected {Settings.Sandbox}.");
         result.Check(
-            configuration.Flag("hasPublishedConfiguration") == true && configuration.Number("publishedVersion") > 0,
-            "Expected published configuration.");
-
+            status.TryGetProperty("published", out JsonElement published) &&
+                published.ValueKind == JsonValueKind.Object &&
+                published.Number("version") > 0,
+            "Expected a published version.");
         result.Check(
-            configuration.TryGetProperty("lastPublish", out JsonElement lastPublish) &&
+            status.TryGetProperty("documents", out JsonElement documents) &&
+                documents.ValueKind == JsonValueKind.Array &&
+                documents.GetArrayLength() > 0,
+            "Expected the sandbox's documents.");
+        result.Check(
+            status.TryGetProperty("lastPublish", out JsonElement lastPublish) &&
                 lastPublish.ValueKind == JsonValueKind.Object &&
                 !string.IsNullOrWhiteSpace(lastPublish.Text("status")),
             "Expected the last publish's status.");
+    }
+
+    [LiveFact]
+    public async Task ConfigHistory_ListsEntriesNewestFirst()
+    {
+        CliResult result = await Cli.RunForSellerAsync(
+            "xbl", "config", "history", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox, "--limit", "5");
+
+        JsonElement history = result.Json();
+        result.Check(history.Is("sandbox", Settings.Sandbox), $"Expected {Settings.Sandbox}.");
+        long?[] versions = [.. history.Items("entries").Select(entry => entry.Number("version"))];
+        result.Check(versions.Length <= 5, "Expected at most 5 entries.");
+        result.Check(versions.All(version => version > 0), "Expected each entry's version.");
+        result.Check(versions.SequenceEqual(versions.OrderDescending()), "Expected the newest entry first.");
     }
 
     [LiveFact]
@@ -190,6 +223,78 @@ public class XblTests
         }
     }
 
+    // XBOX services answer a save of documents identical to the latest ones with FilesNotChangedCommit, and store
+    // nothing. The test saves the documents it just downloaded, at their ETag, only once a validation shows them
+    // unchanged.
+    [LiveWriteFact]
+    public async Task ConfigSave_OfTheDocumentsJustDownloaded_SavesNothing()
+    {
+        DirectoryInfo destination = Directory.CreateTempSubdirectory("xbox-e2e-");
+        try
+        {
+            CliResult download = await Cli.RunForSellerAsync(
+                "xbl", "config", "download", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+                "--view", "draft", "--dest", destination.FullName);
+            JsonElement downloaded = download.Json();
+            string[] files = [.. downloaded.Items("files").Select(file => file.GetString()).OfType<string>()];
+            download.Check(files.Length > 0 && downloaded.Text("etag") is not null, "Expected documents and their ETag.");
+            string[] save =
+            [
+                "xbl", "config", "save", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+                .. files.SelectMany(file => new[] { "--file", file }),
+            ];
+
+            CheckSavedNothing(await Cli.RunForSellerAsync([.. save, "--validate-only"]), downloaded.Text("etag")!);
+            CheckSavedNothing(await Cli.RunForSellerAsync(save), downloaded.Text("etag")!);
+        }
+        finally
+        {
+            destination.Delete(recursive: true);
+        }
+    }
+
+    private static void CheckSavedNothing(CliResult save, string downloadedEtag)
+    {
+        // The CLI prints the service's response as it is, which names its fields in PascalCase.
+        JsonElement result = save.Json().Field("result");
+        save.Check(
+            result.Flag("CanCommit") == false && result.Flag("Committed") == false &&
+                result.Items("ValidationInfo").Select(message => message.Text("Error")).SequenceEqual(["FilesNotChangedCommit"]),
+            "Expected nothing saved, because the documents haven't changed.");
+        save.Check(result.Text("ETag") == downloadedEtag, $"Expected the configuration still at ETag {downloadedEtag}.");
+    }
+
+    // XBOX services' document hashes are SHA-1 of the bytes a download saves, so the draft's own files
+    // compare as the same as the draft.
+    [LiveFact]
+    public async Task ConfigDiff_FindsTheDocumentsJustDownloadedTheSameAsTheDraft()
+    {
+        DirectoryInfo destination = Directory.CreateTempSubdirectory("xbox-e2e-");
+        try
+        {
+            CliResult download = await Cli.RunForSellerAsync(
+                "xbl", "config", "download", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+                "--view", "draft", "--dest", destination.FullName);
+            string[] files = [.. download.Json().Items("files").Select(file => file.GetString()).OfType<string>()];
+            download.Check(files.Length > 0, "Expected documents.");
+
+            CliResult result = await Cli.RunForSellerAsync(
+            [
+                "xbl", "config", "diff", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+                .. files.SelectMany(file => new[] { "--file", file }),
+            ]);
+
+            JsonElement diff = result.Json();
+            JsonElement[] documents = [.. diff.Items("features").SelectMany(feature => feature.Items("documents"))];
+            result.Check(documents.Length > 0, "Expected compared documents.");
+            result.Check(documents.All(document => document.Is("state", "same")), "Expected every document the same as the draft.");
+        }
+        finally
+        {
+            destination.Delete(recursive: true);
+        }
+    }
+
     // A failed request writes one JSON error to stderr, whose detail carries the service's reason and its
     // correlation vector (MS-CV), which traces the request.
     [LiveFact]
@@ -229,6 +334,163 @@ public class XblTests
         // The CLI prints the service's response as it is, which names its fields in PascalCase.
         result.Check(!string.IsNullOrWhiteSpace(result.Json().Text("Status")), "Expected a status.");
     }
+
+    // XBOX services validate the seller account's working configuration and start no publish. When that configuration is
+    // already live, the service answers AlreadyPublished instead, without validating it.
+    [LiveFact]
+    public async Task ConfigPublish_ValidateOnly_ValidatesTheAccount()
+    {
+        CliResult result = await Cli.RunForSellerAsync("xbl", "config", "publish", "--scope", "account", "--validate-only");
+
+        result.Check(
+            result.Json().Text("status") is "Validated" or "AlreadyPublished",
+            "Expected the account's configuration validated, or already published.");
+    }
+
+    [LiveFact]
+    public async Task BindingGet_ReturnsTheGamesOwnTitleId()
+    {
+        CliResult result = await Cli.RunForSellerAsync("xbl", "binding", "get", "--store-id", Settings.StoreId);
+
+        JsonElement binding = result.Json();
+        result.Check(binding.Is("storeId", Settings.StoreId), $"Expected Store ID {Settings.StoreId}.");
+        result.Check(binding.Is("titleId", Settings.TitleId), $"Expected XBOX title ID {Settings.TitleId}.");
+    }
+
+    [LiveFact]
+    public async Task GlobalStorageGet_ReadsTheSandboxUsageByTitleId()
+    {
+        CliResult result = await Cli.RunForSellerAsync(
+            "xbl", "global-storage", "get", "--title-id", Settings.TitleId, "--sandbox-id", Settings.Sandbox);
+
+        result.Check(result.Json().Number("quotaBytes") > 0, "Expected the sandbox's quota.");
+    }
+
+    [LiveFact]
+    public async Task GlobalStorageList_ListsTheSandboxFiles()
+    {
+        CliResult result = await Cli.RunForSellerAsync(
+            "xbl", "global-storage", "list", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox);
+
+        result.Check(result.Json().ValueKind == JsonValueKind.Array, "Expected an array of files.");
+    }
+
+    [LiveFact]
+    public async Task BusinessPartnerList_ListsTheAccountsBusinessPartners()
+    {
+        CliResult result = await Cli.RunForSellerAsync("xbl", "business-partner", "list");
+
+        result.Check(result.Json().ValueKind == JsonValueKind.Array, "Expected an array of business partners.");
+    }
+
+    // Players in the sandbox get an uploaded file at once, so the test uploads to a folder of its own, and deletes the
+    // file in the same test; XBOX services keep no copy of a deleted file. An upload without --overwrite never replaces a
+    // file, and a delete removes only a file of that path and type, so the test changes only its own file and the ones
+    // DeleteStorageLeftoversAsync finds.
+    [LiveWriteFact]
+    public async Task GlobalStorageUploadDownloadAndDelete_LeavesNoFile()
+    {
+        await DeleteStorageLeftoversAsync();
+
+        string path = StorageFileName + DateTime.UtcNow.ToString(StorageFileTime, CultureInfo.InvariantCulture) + ".json";
+        byte[] content = Encoding.UTF8.GetBytes("""{"createdBy":"The XBOX CLI's end-to-end tests"}""");
+        DirectoryInfo directory = Directory.CreateTempSubdirectory("xbox-e2e-");
+        string file = Path.Combine(directory.FullName, "upload.json");
+        string downloaded = Path.Combine(directory.FullName, "download.json");
+        await File.WriteAllBytesAsync(file, content);
+        string[] upload =
+        [
+            "xbl", "global-storage", "upload", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+            "--file", file, "--path", path, "--file-type", "json",
+        ];
+        bool mightBeLeft = false;
+        try
+        {
+            CliResult uploaded = await Cli.RunForSellerAsync(upload);
+
+            // Exit 1 means the upload was refused, so there's nothing to delete.
+            mightBeLeft = uploaded.ExitCode != 1;
+            uploaded.Check(uploaded.ExitCode == 0, "Expected exit code 0.");
+
+            CliResult download = await Cli.RunForSellerAsync(
+                "xbl", "global-storage", "download", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+                "--path", path, "--file-type", "json", "--dest", downloaded);
+            download.Check(
+                download.ExitCode == 0 && File.Exists(downloaded) && File.ReadAllBytes(downloaded).AsSpan().SequenceEqual(content),
+                "Expected the file as it was uploaded.");
+
+            CliResult again = await Cli.RunForSellerAsync(upload);
+            again.CheckServiceError(409);
+            again.Check(
+                again.Stderr.Contains("\"code\":\"global_storage_file_exists\"", StringComparison.Ordinal) &&
+                    again.Stderr.Contains("Pass --overwrite to replace it.", StringComparison.Ordinal),
+                "Expected the upload refused because the file exists, with the option that replaces it.");
+
+            CliResult delete = await DeleteStorageFileAsync(path);
+            delete.Check(delete.ExitCode == 0, "Expected exit code 0.");
+
+            CliResult list = await ListStorageFolderAsync();
+            list.Check(!list.Json().Items().Any(listed => listed.Is("path", path)), $"Expected {path} gone.");
+            mightBeLeft = false;
+        }
+        finally
+        {
+            if (mightBeLeft && DescribeFailedDelete(await DeleteStorageFileAsync(path), path) is { } failure)
+            {
+                output.WriteLine(failure);
+            }
+
+            directory.Delete(recursive: true);
+        }
+    }
+
+    // Deletes the files that runs which stopped early left, and fails if one is still there, so it's noticed.
+    private static async Task DeleteStorageLeftoversAsync()
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        List<string> failures = [];
+        foreach (JsonElement file in (await ListStorageFolderAsync()).Json().Items())
+        {
+            if (IsStorageLeftover(file, now) &&
+                DescribeFailedDelete(await DeleteStorageFileAsync(file.Text("path")!), file.Text("path")!) is { } failure)
+            {
+                failures.Add(failure);
+            }
+        }
+
+        if (failures.Count > 0)
+        {
+            throw new XunitException(string.Join(Environment.NewLine, failures));
+        }
+    }
+
+    // A json file named StorageFileName and a time over an hour ago, so a run that's still going keeps its own.
+    private static bool IsStorageLeftover(JsonElement file, DateTimeOffset now) =>
+        file.Is("type", "json") &&
+        file.Text("path") is { } path &&
+        path.StartsWith(StorageFileName, StringComparison.Ordinal) &&
+        path.EndsWith(".json", StringComparison.Ordinal) &&
+        DateTimeOffset.TryParseExact(
+            path[StorageFileName.Length..^".json".Length], StorageFileTime, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal, out DateTimeOffset made) &&
+        now - made > TimeSpan.FromHours(1);
+
+    private static Task<CliResult> ListStorageFolderAsync() =>
+        Cli.RunForSellerAsync(
+            "xbl", "global-storage", "list", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+            "--path", StorageFolder);
+
+    private static Task<CliResult> DeleteStorageFileAsync(string path) =>
+        Cli.RunForSellerAsync(
+            "xbl", "global-storage", "delete", "--scid", Settings.Scid, "--sandbox-id", Settings.Sandbox,
+            "--path", path, "--file-type", "json", "--confirm");
+
+    /// <summary>Why a delete failed, or null once the file is gone.</summary>
+    private static string? DescribeFailedDelete(CliResult delete, string path) =>
+        delete.ExitCode == 0 ||
+        (delete.ExitCode == 1 && delete.Stderr.Contains("\"code\":\"global_storage_file_not_found\"", StringComparison.Ordinal))
+            ? null
+            : $"Deleting global storage file {path} failed.{Environment.NewLine}{delete}";
 
     /// <summary>The width and height in a PNG's header, or null if the file isn't a PNG.</summary>
     private static (int Width, int Height)? ReadPngSize(string path)

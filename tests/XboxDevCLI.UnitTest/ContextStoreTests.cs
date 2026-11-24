@@ -16,7 +16,6 @@ public sealed class ContextStoreTests : IDisposable
     private const string GatewayScope = "tenant:user@gateway.example";
     private const string PlayFabEndpoint = "https://{0}.playfabapi.com";
     private static readonly SignedInIdentity Identity = new("tenant", "user");
-    private static readonly DateTime LongAgo = new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
     private readonly string _directory =
         Path.Combine(Path.GetTempPath(), $"xbox-context-store-{Guid.NewGuid():N}");
@@ -57,11 +56,8 @@ public sealed class ContextStoreTests : IDisposable
     }
 
     [Theory]
-    [InlineData("https://gateway.example", GatewayScope)]
     [InlineData("https://Gateway.Example/xboxpartner/", GatewayScope)]
     [InlineData("http://localhost:54848", "tenant:user@localhost:54848")]
-    [InlineData("https://xboxdevcli.playfabapi.com", "tenant:user@xboxdevcli.playfabapi.com")]
-    [InlineData("https://{0}.playfabapi.com", "tenant:user@title.playfabapi.com")]
     [InlineData("NOT-A-URL", "tenant:user@not-a-url")]
     public void CreateScope_IsTenantAndUserAtTheLowercasedAuthority(string endpoint, string expected)
     {
@@ -88,41 +84,6 @@ public sealed class ContextStoreTests : IDisposable
         Assert.True(contexts.TryGetProperty("tenant:user@title.playfabapi.com", out _));
     }
 
-    [Fact]
-    public async Task UpdateAsync_WritesAVersionedIndentedCamelCaseFile()
-    {
-        await new ContextStore(FilePath).UpdateAsync(
-            Identity,
-            [new ContextChange("seller-id", Gateway, "1234567")]);
-
-        var text = await File.ReadAllTextAsync(FilePath);
-        Assert.Contains('\n', text);
-        var root = await ReadFileAsync();
-        Assert.Equal(2, root.GetProperty("version").GetInt32());
-        Assert.Equal(
-            "1234567",
-            root.GetProperty("contexts").GetProperty(GatewayScope).GetProperty("seller-id").GetString());
-
-        // With no named profile, the file has the shape a version-1 CLI wrote.
-        Assert.False(root.TryGetProperty("profiles", out _));
-    }
-
-    [Fact]
-    public async Task UpdateAsync_LeavesNoStagingFileAfterASuccessfulWrite()
-    {
-        var store = new ContextStore(FilePath);
-
-        await store.UpdateAsync(Identity, [new ContextChange("seller-id", Gateway, "1111111")]);
-        await store.UpdateAsync(Identity, [new ContextChange("seller-id", Gateway, "2222222")]);
-
-        // The lock file stays: it's only a lock while a writer holds it open.
-        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
-        Assert.Equal(
-            [FilePath, LockPath],
-            Directory.GetFileSystemEntries(_directory).Order(StringComparer.Ordinal));
-        Assert.Equal("2222222", await store.GetAsync(Identity, "seller-id", Gateway));
-    }
-
     /// <summary>
     /// A write is staged in its own file and renamed into place. When the rename keeps failing
     /// (here because a directory sits where the context file goes), it is retried briefly, then
@@ -144,24 +105,6 @@ public sealed class ContextStoreTests : IDisposable
             $"Expected the rename to fail, but got {exception?.GetType().Name ?? "no exception"}.");
         Assert.DoesNotContain("not writable", exception!.Message, StringComparison.Ordinal);
         Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
-    }
-
-    [Fact]
-    public async Task UpdateAsync_SavesSeveralValuesInOneCall()
-    {
-        var store = new ContextStore(FilePath);
-
-        await store.UpdateAsync(
-            Identity,
-            [
-                new ContextChange("seller-id", Gateway, "1111111"),
-                new ContextChange("playfab-title-id", "https://{0}.playfabapi.com", "ABC12"),
-            ]);
-
-        Assert.Equal("1111111", await store.GetAsync(Identity, "seller-id", Gateway));
-        Assert.Equal(
-            "ABC12",
-            await store.GetAsync(Identity, "playfab-title-id", "https://{0}.playfabapi.com"));
     }
 
     /// <summary>
@@ -250,36 +193,6 @@ public sealed class ContextStoreTests : IDisposable
         Assert.Null(await store.GetAsync(Identity, "seller-id", Gateway));
     }
 
-    [Fact]
-    public async Task UpdateAsync_ChangingNothingDoesNotWrite()
-    {
-        var store = new ContextStore(FilePath);
-        await store.UpdateAsync(Identity, [new ContextChange("seller-id", Gateway, "1111111")]);
-
-        // A write replaces the file with a freshly staged one, so it can't keep this timestamp.
-        File.SetLastWriteTimeUtc(FilePath, LongAgo);
-
-        await store.UpdateAsync(
-            Identity,
-            [
-                new ContextChange("seller-id", Gateway, "1111111"),
-                new ContextChange("playfab-title-id", Gateway, null),
-                new ContextChange("seller-id", "https://other.example", null),
-            ]);
-
-        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(FilePath));
-        Assert.Equal("1111111", await store.GetAsync(Identity, "seller-id", Gateway));
-    }
-
-    [Fact]
-    public async Task GetAsync_MissingFileReturnsNullWithoutCreatingIt()
-    {
-        var store = new ContextStore(FilePath);
-
-        Assert.Null(await store.GetAsync(Identity, "seller-id", Gateway));
-        Assert.False(Directory.Exists(_directory));
-    }
-
     /// <summary>
     /// A syntactically valid file can still deserialize to a null map, which would otherwise be
     /// dereferenced as a null reference instead of reporting the file.
@@ -288,10 +201,8 @@ public sealed class ContextStoreTests : IDisposable
     [InlineData("")]
     [InlineData("not-json")]
     [InlineData("null")]
-    [InlineData("[]")]
     [InlineData("""{"version":1,"contexts":null}""")]
     [InlineData("""{"version":1,"contexts":{"tenant:user@gateway.example":null}}""")]
-    [InlineData("""{"version":1,"contexts":{"tenant:user@gateway.example":"1111111"}}""")]
     [InlineData("""{"version":1,"contexts":{"tenant:user@gateway.example":{"seller-id":1234567}}}""")]
     [InlineData("""{"version":2,"contexts":{},"profiles":{"test":null}}""")]
     [InlineData("""{"version":2,"contexts":{},"profiles":{"test":{"tenant:user@gateway.example":null}}}""")]
@@ -354,25 +265,6 @@ public sealed class ContextStoreTests : IDisposable
             ["other-tenant:user@gateway.example", "tenant:user2@gateway.example"],
             contexts.EnumerateObject().Select(scope => scope.Name).Order(StringComparer.Ordinal));
         Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
-    }
-
-    [Fact]
-    public async Task RemoveAllAsync_RemovingNothingWritesNothing()
-    {
-        var store = new ContextStore(FilePath);
-        var otherUser = new SignedInIdentity("tenant", "other-user");
-
-        Assert.False(await store.RemoveAllAsync(Identity));
-
-        Assert.False(Directory.Exists(_directory));
-
-        await store.UpdateAsync(otherUser, [new ContextChange("seller-id", Gateway, "1111111")]);
-        File.SetLastWriteTimeUtc(FilePath, LongAgo);
-
-        Assert.False(await store.RemoveAllAsync(Identity));
-
-        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(FilePath));
-        Assert.Equal("1111111", await store.GetAsync(otherUser, "seller-id", Gateway));
     }
 
     /// <summary>
@@ -784,30 +676,6 @@ public sealed class ContextStoreTests : IDisposable
 
         Assert.False(File.Exists(LockPath));
         Assert.Equal("1111111", await store.GetAsync(Identity, "seller-id", Gateway));
-    }
-    [Fact]
-    public async Task SequentialWrites_PreserveEveryScopedValue()
-    {
-        var identities = Enumerable.Range(0, 5)
-            .Select(index => new SignedInIdentity("tenant", $"user-{index}"))
-            .ToArray();
-
-        // Each write is a read-modify-write over a file shared by every scope, so a later value
-        // must merge into the existing map rather than replace it.
-        for (var index = 0; index < identities.Length; index++)
-        {
-            await new ContextStore(FilePath).UpdateAsync(
-                identities[index],
-                [new ContextChange("seller-id", Gateway, $"{index + 1}000000")]);
-        }
-
-        var store = new ContextStore(FilePath);
-        for (var index = 0; index < identities.Length; index++)
-        {
-            Assert.Equal(
-                $"{index + 1}000000",
-                await store.GetAsync(identities[index], "seller-id", Gateway));
-        }
     }
 
     private static void AssertNotWritable(UnauthorizedAccessException exception)

@@ -16,10 +16,6 @@ namespace XboxDevCLI.Commands;
 
 internal static partial class TestAccountCommandFactory
 {
-
-    /// <summary>The create returned, or was interrupted, without telling us whether it created a batch.</summary>
-    internal const int OutcomeUnknownExitCode = 3;
-
     /// <summary>The job reached the failed state.</summary>
     internal const int JobFailedExitCode = 2;
 
@@ -83,14 +79,14 @@ internal static partial class TestAccountCommandFactory
         var passwordFileOption = new Option<string?>("--password-file")
         {
             Description =
-                "File holding the account password, or - to read it from stdin. Without it, the CLI " +
+                "File holding the account password, or - to read it from piped stdin. Without it, the CLI " +
                 "prompts in a terminal and never echoes the value.",
             HelpName = "path",
         };
         var securityAnswerFileOption = new Option<string?>("--security-answer-file")
         {
             Description =
-                "File holding the security answer, or - to read it from stdin. Without it, the CLI " +
+                "File holding the security answer, or - to read it from piped stdin. Without it, the CLI " +
                 "prompts in a terminal and never echoes the value.",
             HelpName = "path",
         };
@@ -173,7 +169,7 @@ internal static partial class TestAccountCommandFactory
                 "numbered choice before confirmation. Enter selects the default question. --confirm " +
                 "skips only confirmation, not the question or secret prompts.",
                 "The password and security answer are read from --password-file, --security-answer-file, " +
-                "stdin, or a prompt; never from an option value or an environment variable.",
+                "piped stdin, or a prompt; never from an option value or an environment variable.",
                 TestAccountSecretReader.PasswordRequirements +
                 " The password must not exactly match the security answer.",
                 "Waits up to 5 minutes by default, polling as the service's Retry-After asks. Exit codes: 0 " +
@@ -209,13 +205,14 @@ internal static partial class TestAccountCommandFactory
         command.Options.Add(timeoutOption);
         command.Validators.Add(result =>
         {
-            if (result.GetValue(passwordFileOption) == TestAccountSecretReader.StandardInput &&
-                result.GetValue(securityAnswerFileOption) == TestAccountSecretReader.StandardInput)
+            // Not GetValue, which throws for a missing or repeated value. The parser reports those.
+            if (result.GetResult(passwordFileOption)?.Tokens is [{ Value: TestAccountSecretReader.StandardInput }] &&
+                result.GetResult(securityAnswerFileOption)?.Tokens is [{ Value: TestAccountSecretReader.StandardInput }])
             {
                 result.AddError("--password-file and --security-answer-file cannot both read stdin.");
             }
 
-            if (result.GetValue(noWaitOption) && result.GetResult(timeoutOption) is { Implicit: false })
+            if (result.GetFlag(noWaitOption) && result.GetResult(timeoutOption) is { Implicit: false })
             {
                 result.AddError("--no-wait and --timeout cannot be combined.");
             }
@@ -282,15 +279,17 @@ internal static partial class TestAccountCommandFactory
                     Locale = Trim(parseResult.GetValue(localeOption)),
                     Subscription = NormalizeSubscription(parseResult.GetValue(subscriptionOption)),
                 },
-                request =>
+                async (request, token) =>
                 {
-                    request.Password = TestAccountSecretReader.ReadPassword(passwordFile, dependencies);
-                    request.SecurityAnswer = TestAccountSecretReader.Read(
+                    request.Password = await TestAccountSecretReader.ReadPasswordAsync(passwordFile, dependencies, token)
+                        .ConfigureAwait(false);
+                    request.SecurityAnswer = await TestAccountSecretReader.ReadAsync(
                         securityAnswerFile,
                         "--security-answer-file",
                         "Security answer",
                         dependencies,
-                        prompt: $"Answer to \"{securityQuestion}\"");
+                        token,
+                        prompt: $"Answer to \"{securityQuestion}\"").ConfigureAwait(false);
                 },
                 parseResult.GetResult(confirmOption) is { Implicit: false }
                     ? parseResult.GetValue(confirmOption)
@@ -347,7 +346,7 @@ internal static partial class TestAccountCommandFactory
         ParseResult parseResult,
         XdtsSellerOption sellerOption,
         CreateTestAccountBatchRequest request,
-        Action<CreateTestAccountBatchRequest> readSecrets,
+        Func<CreateTestAccountBatchRequest, CancellationToken, Task> readSecrets,
         bool confirmed,
         bool noWait,
         TimeSpan timeout,
@@ -365,7 +364,7 @@ internal static partial class TestAccountCommandFactory
         XboxPartnerClient client,
         long? sellerId,
         CreateTestAccountBatchRequest request,
-        Action<CreateTestAccountBatchRequest> readSecrets,
+        Func<CreateTestAccountBatchRequest, CancellationToken, Task> readSecrets,
         bool confirmed,
         bool noWait,
         TimeSpan timeout,
@@ -385,11 +384,16 @@ internal static partial class TestAccountCommandFactory
 
         try
         {
-            readSecrets(request);
+            await readSecrets(request, cancellationToken).ConfigureAwait(false);
         }
         catch (InvalidOperationException exception)
         {
             stderr.WriteLine(exception.Message);
+            return 1;
+        }
+        catch (OperationCanceledException)
+        {
+            stderr.WriteLine("Canceled before the create was sent. Nothing was created.");
             return 1;
         }
 
@@ -397,16 +401,16 @@ internal static partial class TestAccountCommandFactory
         DateTimeOffset requestStarted = dependencies.GetUtcNow();
         Program.WriteVerbose(verbose, () => "Creating a test account batch using the signed in Entra ID token");
         stderr.WriteLine("Submitting test account creation job...");
-        bool sent = false;
+        string? sentCorrelationId = null;
         TestAccountJobResult accepted;
         try
         {
             // Sent once. Every failure that could follow the request leaving the process is
             // reported as an unknown outcome rather than retried.
-            accepted = await client.CreateTestAccountBatchAsync(request, cancellationToken, () => sent = true)
+            accepted = await client.CreateTestAccountBatchAsync(request, cancellationToken, correlationId => sentCorrelationId = correlationId)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (!sent)
+        catch (Exception exception) when (sentCorrelationId is null)
         {
             stderr.WriteLine(exception is OperationCanceledException
                 ? "Canceled before the create was sent. Nothing was created."
@@ -417,7 +421,7 @@ internal static partial class TestAccountCommandFactory
         {
             stderr.WriteLine(FormatError(exception, output.IsCompact));
             WriteOutcomeUnknown(emailPrefix, requestStarted, recovery, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
         catch (XboxPartnerApiException exception)
         {
@@ -433,7 +437,7 @@ internal static partial class TestAccountCommandFactory
             XboxPartnerCommandSupport.WriteCorrelationId(exception.CorrelationId, stderr);
             stderr.WriteLine($"The service accepted the request, but its response could not be read: {exception.Message}");
             WriteOutcomeUnknown(emailPrefix, requestStarted, recovery, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
         // ConnectionError is left out: the handler can resend on a new connection after a pooled one
         // drops, so a failed connect does not prove an earlier attempt never reached the service.
@@ -445,6 +449,7 @@ internal static partial class TestAccountCommandFactory
         }
         catch (Exception exception)
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(exception, stderr, sentCorrelationId);
             stderr.WriteLine(exception switch
             {
                 OperationCanceledException when cancellationToken.IsCancellationRequested =>
@@ -455,7 +460,7 @@ internal static partial class TestAccountCommandFactory
                 _ => $"The create was sent, but failed before its answer could be read: {exception.Message}",
             });
             WriteOutcomeUnknown(emailPrefix, requestStarted, recovery, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
 
         TestAccountJob job = accepted.Job;

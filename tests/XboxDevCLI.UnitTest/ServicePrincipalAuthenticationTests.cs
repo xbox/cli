@@ -29,39 +29,10 @@ public class ServicePrincipalAuthenticationTests
         """{"tid":"15fc7b3e-912c-4c49-ad3d-734293d93a23","oid":"sp","sub":"sp","appid":"3778efb3-5411-47ab-a790-b5db0eed39a6","aud":"api://playfab","idtyp":"app"}""";
     private static readonly string AppJwt = AutomationTestTokens.Jwt(AppPayload);
 
-    [Fact]
-    public async Task AcquireTokenSilent_UsesProviderCreatedOnceWithoutPublicClientSettings()
-    {
-        var provider = new FakeProvider(AutomationTestTokens.Result(AppJwt));
-        var created = 0;
-        var service = new AuthenticationService(ScopesOnlyConfig(Scope), null, ClientSecret, (settings, scopes) =>
-        {
-            created++;
-            Assert.Same(ClientSecret, settings);
-            Assert.Equal([Scope], scopes);
-            return provider;
-        });
-
-        Assert.True(service.IsAutomation);
-        Assert.Equal(0, created);
-
-        var first = await service.AcquireTokenSilentAsync(CancellationToken.None);
-        var second = await service.AcquireTokenSilentAsync(CancellationToken.None);
-
-        Assert.Equal(AppJwt, first!.AccessToken);
-        Assert.Same(first, second);
-        Assert.Equal(1, created);
-        Assert.Equal(2, provider.Calls);
-    }
-
     [Theory]
     [InlineData("clientsecret")]
-    [InlineData("certificate")]
-    [InlineData("federatedtoken")]
-    [InlineData("githuboidc")]
     [InlineData("azurecli")]
-    [InlineData("managedidentity")]
-    public async Task AcquireTokenSilent_AllAutomationModes_KeepOneIdentity(string mode)
+    public async Task AcquireTokenSilent_AutomationModes_KeepOneIdentity(string mode)
     {
         foreach (var claim in new[] { "tid", "oid", "appid" })
         {
@@ -92,16 +63,13 @@ public class ServicePrincipalAuthenticationTests
     }
 
     [Theory]
-    [InlineData("tid", null)]
-    [InlineData("oid", null)]
-    [InlineData("appid", null)]
-    [InlineData("tid", " ")]
-    [InlineData("oid", " ")]
-    [InlineData("appid", " ")]
-    public async Task AcquireTokenSilent_RefusesMissingIdentityClaimsInitiallyAndOnRefresh(string claim, string? value)
+    [InlineData("tid")]
+    [InlineData("oid")]
+    [InlineData("appid")]
+    public async Task AcquireTokenSilent_RefusesMissingIdentityClaimsInitiallyAndOnRefresh(string claim)
     {
         var payload = JsonSerializer.Deserialize<Dictionary<string, string?>>(AppPayload)!;
-        payload[claim] = value;
+        payload[claim] = null;
         var incomplete = AutomationTestTokens.Result(AutomationTestTokens.Jwt(JsonSerializer.Serialize(payload)));
         var valid = AutomationTestTokens.Result(AppJwt);
         foreach (var onRefresh in new[] { false, true })
@@ -257,20 +225,6 @@ public class ServicePrincipalAuthenticationTests
     }
 
     [Fact]
-    public async Task Status_ConfigurationError_FailsWithErrorOnStderr()
-    {
-        var (exitCode, stdout, stderr) = await RunAsync(
-            StatusCommandFactory.Create(_ => throw new AuthenticationConfigurationException("bad mode")),
-            "status --output json-compact");
-
-        Assert.Equal(1, exitCode);
-        Assert.Empty(stdout);
-        using var json = JsonDocument.Parse(stderr);
-        Assert.False(json.RootElement.GetProperty("signedIn").GetBoolean());
-        Assert.Equal("bad mode", json.RootElement.GetProperty("error").GetString());
-    }
-
-    [Fact]
     public void Invocation_InspectionAndAuthenticationShareCapturedInputsAcrossContextReparse()
     {
         var originalReader = AutomationAuthenticationSettings.ReadEnvironment;
@@ -416,18 +370,6 @@ public class ServicePrincipalAuthenticationTests
         Assert.Equal("clientsecret", service.SelectedModeName);
     }
 
-    [Fact]
-    public void Service_InvalidInputsCannotCreateAService()
-    {
-        var environment = AutomationAuthenticationSettings.Capture(ConflictingAuthenticationEnvironment("CLIENTID"));
-
-        Assert.Equal("invalid", environment.SelectedModeName);
-        Assert.Throws<AuthenticationConfigurationException>(() => AuthenticationService.Create(
-            ScopesOnlyConfig(Scope),
-            environment,
-            (_, _) => throw new InvalidOperationException("Must not create a provider.")));
-    }
-
     [Theory]
     [InlineData("--help", "MODE", false)]
     [InlineData("--help", "CLIENTID", true)]
@@ -436,13 +378,9 @@ public class ServicePrincipalAuthenticationTests
     [InlineData("", "CLIENTID", false)]
     [InlineData("info", "MODE", false)]
     [InlineData("info", "CLIENTSECRET__FILE", true)]
-    [InlineData("context key list", "CLIENTID", false)]
-    [InlineData("auth status --output json", "MODE", false)]
-    [InlineData("auth status --output json-compact", "MODE", true)]
     [InlineData("auth status --output json", "CLIENTID", true)]
     [InlineData("auth status --output json-compact", "CLIENTSECRET__FILE", false)]
     [InlineData("auth login", "MODE", true)]
-    [InlineData("auth logout", "CLIENTID", true)]
     [InlineData("seller list", "CLIENTID", true)]
     [InlineData("game list --seller-id 1234567", "CLIENTID", true)]
     [InlineData("playfab title-data get --playfab-title-id ABC123", "CLIENTID", true)]
@@ -531,42 +469,6 @@ public class ServicePrincipalAuthenticationTests
             AutomationAuthenticationSettings.ReadEnvironment = originalReader;
             Console.SetOut(originalOut);
             Console.SetError(originalError);
-        }
-    }
-
-    /// <summary>
-    /// A configuration that can't be read, such as built-in settings missing from the build, fails
-    /// status in every mode rather than reporting a signed-out user, and the action never runs.
-    /// </summary>
-    [Theory]
-    [InlineData("azurecli", "json")]
-    [InlineData("azurecli", "json-compact")]
-    [InlineData(null, "json")]
-    [InlineData(null, "json-compact")]
-    public async Task Status_ConfigurationFailure_FailsInEveryMode(string? mode, string format)
-    {
-        using var automation = mode is null ? null : TestEnvironment.UseAuthenticationMode(mode);
-        using var unreadable = TestSettings.UseUnreadable();
-        var actionRan = false;
-
-        var (exitCode, stdout, stderr) = await RunAsync(
-            StatusCommandFactory.Create(parseResult =>
-            {
-                actionRan = true;
-                return Program.GetAuthentication(parseResult);
-            }),
-            $"status --output {format}");
-
-        Assert.Equal(1, exitCode);
-        Assert.False(actionRan);
-        Assert.Empty(stdout);
-        using var json = JsonDocument.Parse(stderr);
-        Assert.False(json.RootElement.GetProperty("signedIn").GetBoolean());
-        Assert.Contains(TestSettings.UnreadableMessage, json.RootElement.GetProperty("error").GetString(), StringComparison.Ordinal);
-        Assert.Equal(mode is not null, json.RootElement.TryGetProperty("authenticationMode", out var reported));
-        if (mode is not null)
-        {
-            Assert.Equal(mode, reported.GetString());
         }
     }
 

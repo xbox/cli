@@ -20,7 +20,6 @@ namespace XboxDevCLI.Services;
 /// <c>PlayFab:HostHeader</c> (built in as <c>{titleId}.playfabapi.com</c>) rather than in the
 /// request host. <c>/Studio/*</c> paths aren't scoped to a title: they go to
 /// <c>PlayFab:StudioBaseUrl</c> with no <c>X-PlayFab-Host</c> header, and need no title.
-/// <c>PlayFab:RequestHeaders</c> adds other headers.
 /// </summary>
 public class PlayFabApiClient : IDisposable
 {
@@ -40,27 +39,12 @@ public class PlayFabApiClient : IDisposable
     /// <summary>The selected PlayFab title, or <c>null</c> when none is set.</summary>
     private readonly string? _titleId;
 
-    /// <summary>The <see cref="RoutingHeader"/> sent with title requests, if any.</summary>
-    private readonly KeyValuePair<string, string>? _routingHeader;
+    /// <summary>The <see cref="RoutingHeader"/> value sent with title requests, if any.</summary>
+    private readonly string? _routingHeader;
     private readonly AuthenticationService _authService;
     private readonly bool _ownsHttpClient;
     private readonly long _maxResponseBytes;
     private readonly AuditLogger _auditLogger;
-    private readonly List<KeyValuePair<string, string>> _requestHeaders = new();
-
-    /// <summary>
-    /// Header names that must not be configured via <c>PlayFab:RequestHeaders</c>
-    /// because they are managed by the client or could weaken security.
-    /// </summary>
-    private static readonly HashSet<string> DeniedHeaders = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Authorization",
-        "Host",
-        "Cookie",
-        "Set-Cookie",
-        "X-SecretKey",
-        "X-EntityToken",
-    };
 
     /// <summary>The header that carries the target title, set by <see cref="HostHeaderKey"/>.</summary>
     private const string RoutingHeader = "X-PlayFab-Host";
@@ -144,42 +128,8 @@ public class PlayFabApiClient : IDisposable
                         $"'{NoHostHeader}' to send no {RoutingHeader} header.");
                 }
 
-                _routingHeader = new KeyValuePair<string, string>(RoutingHeader, value);
+                _routingHeader = value;
             }
-        }
-
-        var headerSection = configuration.GetSection("PlayFab:RequestHeaders").GetChildren();
-        foreach (var entry in headerSection)
-        {
-            var name = entry["Name"];
-            var valueTemplate = entry["Value"];
-
-            // Earlier releases built in the routing header as entry 0 and suggested overriding
-            // only its value, so a leftover XBOX_PLAYFAB__REQUESTHEADERS__0__VALUE has no name.
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                throw new InvalidOperationException(
-                    $"PlayFab:RequestHeaders:{entry.Key} has no Name. If it's a leftover " +
-                    $"XBOX_PLAYFAB__REQUESTHEADERS__{entry.Key}__VALUE that set the {RoutingHeader} header, remove " +
-                    "it and set XBOX_PLAYFAB__HOSTHEADER instead. Otherwise, set " +
-                    $"XBOX_PLAYFAB__REQUESTHEADERS__{entry.Key}__NAME.");
-            }
-
-            if (DeniedHeaders.Contains(name))
-            {
-                throw new InvalidOperationException(
-                    $"PlayFab:RequestHeaders contains a denied header '{name}'.");
-            }
-
-            if (string.Equals(name, RoutingHeader, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException(
-                    $"PlayFab:RequestHeaders:{entry.Key} sets the {RoutingHeader} header, which {HostHeaderKey} " +
-                    $"sets. Remove it, and set XBOX_PLAYFAB__HOSTHEADER instead, with {{titleId}} as the first label " +
-                    "of its value.");
-            }
-
-            _requestHeaders.Add(new KeyValuePair<string, string>(name, valueTemplate ?? string.Empty));
         }
 
         _httpClient = httpClient ?? new HttpClient();
@@ -449,25 +399,9 @@ public class PlayFabApiClient : IDisposable
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
             request.Headers.UserAgent.ParseAdd(CliIdentity.UserAgent);
 
-            var headers = studio || _routingHeader is not { } routing
-                ? _requestHeaders
-                : _requestHeaders.Prepend(routing);
-            foreach (var header in headers)
+            if (!studio && _routingHeader is not null)
             {
-                var value = header.Value;
-                if (value.Contains("{titleId}", StringComparison.Ordinal))
-                {
-                    value = studio
-                        ? throw new InvalidOperationException(
-                            $"Configured header '{header.Key}' uses {{titleId}}, but studio APIs aren't sent for a title.")
-                        : value.Replace("{titleId}", _titleId);
-                }
-
-                if (!request.Headers.TryAddWithoutValidation(header.Key, value))
-                {
-                    throw new InvalidOperationException(
-                        $"Configured header '{header.Key}' could not be added to the request. The header may be invalid or unsupported as a request header.");
-                }
+                request.Headers.Add(RoutingHeader, _routingHeader);
             }
 
             var body = jsonBody ?? "{}";
@@ -496,7 +430,7 @@ public class PlayFabApiClient : IDisposable
     {
         OperationCanceledException when cancellationToken.IsCancellationRequested => "the request was canceled",
         OperationCanceledException => "the request timed out",
-        _ => $"the connection failed ({exception.Message})",
+        _ => $"the connection failed ({NetworkErrors.Describe(exception)})",
     };
 
     private static string DescribeBodyReadFailure(Exception exception, CancellationToken cancellationToken) => exception switch

@@ -11,27 +11,14 @@ using Xunit;
 namespace XboxDevCLI.UnitTest;
 
 /// <summary>
-/// Coverage for the <c>playfab privacy</c> command group: command/option structure, the exact
-/// request URI path and serialized JSON body for both <c>export</c> and <c>played-titles</c>,
-/// success output (including <c>--data-only</c> and <c>json-compact</c>), and the API-error path
-/// (non-2xx → stderr + exit 1). Uses an injected client with a fake transport and captured writers,
-/// so no console redirection is needed.
+/// Coverage for the <c>playfab privacy</c> command group: command/option structure, and the exact
+/// request URI path, serialized JSON body and output for both <c>export</c> and
+/// <c>played-titles</c>. Uses an injected client with a fake transport and captured writers, so no
+/// console redirection is needed.
 /// </summary>
 public class PrivacyCommandTests
 {
     #region Command structure
-
-    [Fact]
-    public void Privacy_HasExportAndPlayedTitles()
-    {
-        var privacy = PrivacyCommandFactory.Create();
-
-        Assert.Equal("privacy", privacy.Name);
-        foreach (var name in new[] { "export", "played-titles" })
-        {
-            Assert.Contains(privacy.Subcommands, c => c.Name == name);
-        }
-    }
 
     [Fact]
     public void Privacy_Subcommands_RequirePlayFabId()
@@ -96,42 +83,6 @@ public class PrivacyCommandTests
         Assert.Equal("job-123", outDoc.RootElement.GetProperty("data").GetProperty("JobReceiptId").GetString());
     }
 
-    [Fact]
-    public async Task Export_DataOnly_StripsEnvelope()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"JobReceiptId":"job-9"}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await PrivacyCommandFactory.RunExportAsync(
-            client, "P1", new OutputOptions("json", DataOnly: true), stdout, new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        using var outDoc = JsonDocument.Parse(stdout.ToString());
-        Assert.False(outDoc.RootElement.TryGetProperty("data", out _));
-        Assert.Equal("job-9", outDoc.RootElement.GetProperty("JobReceiptId").GetString());
-    }
-
-    [Fact]
-    public async Task Export_ApiError_WritesStderrAndReturns1()
-    {
-        var handler = new MockHttpMessageHandler(Error(
-            HttpStatusCode.BadRequest,
-            """{"code":400,"status":"BadRequest","error":"InvalidParams","errorMessage":"bad id"}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PrivacyCommandFactory.RunExportAsync(
-            client, "P1", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Empty(stdout.ToString());
-        Assert.Contains("InvalidParams", stderr.ToString());
-    }
-
     #endregion
 
     #region played-titles
@@ -164,34 +115,12 @@ public class PrivacyCommandTests
         Assert.Equal(new[] { "AAA", "BBB" }, titles);
     }
 
-    [Fact]
-    public async Task PlayedTitles_ApiError_WritesStderrAndReturns1()
-    {
-        var handler = new MockHttpMessageHandler(Error(
-            HttpStatusCode.Forbidden,
-            """{"code":403,"status":"Forbidden","error":"NotAuthorized","errorMessage":"nope"}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PrivacyCommandFactory.RunPlayedTitlesAsync(
-            client, "P1", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Empty(stdout.ToString());
-        Assert.Contains("NotAuthorized", stderr.ToString());
-    }
-
     #endregion
 
     #region Test helpers
 
     private static HttpResponseMessage Ok(string json) =>
         new(HttpStatusCode.OK) { Content = new StringContent(json) };
-
-    private static HttpResponseMessage Error(HttpStatusCode status, string json) =>
-        new(status) { Content = new StringContent(json) };
 
     #endregion
 }

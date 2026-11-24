@@ -66,4 +66,31 @@ internal static class CommandRequirements
     /// <summary>What <paramref name="command"/> needs prepared.</summary>
     internal static CommandRequirement For(Command command) =>
         FindDeclared(command) ?? CommandRequirement.Authentication;
+
+    private static readonly ConditionalWeakTable<Command, Conditional> DeclaredWhen = new();
+
+    private sealed record Conditional(Func<ParseResult, bool> When, CommandRequirement Requirement);
+
+    /// <summary>
+    /// Declares that <paramref name="command"/> needs <paramref name="requirement"/> when
+    /// <paramref name="when"/> holds for the parsed command line, such as when an argument needs a
+    /// service to resolve it, and what it inherits otherwise. Unlike <c>Requires</c>, it applies
+    /// only to <paramref name="command"/>, not to its subcommands.
+    /// </summary>
+    internal static TCommand RequiresWhen<TCommand>(
+        this TCommand command, Func<ParseResult, bool> when, CommandRequirement requirement)
+        where TCommand : Command
+    {
+        DeclaredWhen.AddOrUpdate(command, new Conditional(when, requirement));
+        return command;
+    }
+
+    /// <summary>What <paramref name="parseResult"/>'s command needs prepared for its arguments.</summary>
+    internal static CommandRequirement For(ParseResult parseResult)
+    {
+        var command = parseResult.CommandResult.Command;
+        return DeclaredWhen.TryGetValue(command, out var conditional) && conditional.When(parseResult)
+            ? conditional.Requirement
+            : For(command);
+    }
 }

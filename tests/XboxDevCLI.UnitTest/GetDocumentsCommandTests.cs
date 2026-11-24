@@ -96,30 +96,30 @@ public class GetDocumentsCommandTests
             "--view draft --dest output");
         ParseResult validAccount = Program.BuildRootCommand().Parse(
             "xbl config download --seller-id 2 " +
-            "--type account --view draft --dest output");
+            "--scope account --view draft --dest output");
         ParseResult missingScid = Program.BuildRootCommand().Parse(
             "xbl config download --seller-id 2 " +
             "--sandbox-id XDKS.1 --view draft --dest output");
         ParseResult mixedScope = Program.BuildRootCommand().Parse(
             "xbl config download --seller-id 2 " +
-            "--type account --sandbox-id XDKS.1 --view draft --dest output");
+            "--scope account --sandbox-id XDKS.1 --view draft --dest output");
         ParseResult unsafeSandbox = Program.BuildRootCommand().Parse(
             "xbl config download --seller-id 2 " +
             "--scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id ../outside " +
             "--view draft --dest output");
         ParseResult removedAccountId = Program.BuildRootCommand().Parse(
             "xbl config download --seller-id 2 " +
-            "--type account --account-id 11111111-2222-3333-4444-555555555555 --view draft --dest output");
+            "--scope account --account-id 11111111-2222-3333-4444-555555555555 --view draft --dest output");
         ParseResult published = Program.BuildRootCommand().Parse(
-            "xbl config download --type account --view published --dest output");
+            "xbl config download --scope account --view published --dest output");
         ParseResult missingView = Program.BuildRootCommand().Parse(
-            "xbl config download --type account --dest output");
+            "xbl config download --scope account --dest output");
         ParseResult unknownView = Program.BuildRootCommand().Parse(
-            "xbl config download --type account --view working --dest output");
+            "xbl config download --scope account --view working --dest output");
         ParseResult removedLive = Program.BuildRootCommand().Parse(
-            "xbl config download --type account --live --dest output");
+            "xbl config download --scope account --live --dest output");
         ParseResult removedAlias = Program.BuildRootCommand().Parse(
-            "xbl config download --type account --view draft -d output");
+            "xbl config download --scope account --view draft -d output");
 
         Assert.Empty(validSandbox.Errors);
         Assert.Empty(validAccount.Errors);
@@ -134,15 +134,6 @@ public class GetDocumentsCommandTests
             error => error.Message == "Invalid value 'working' for option '--view'. Allowed values: draft, published.");
         Assert.NotEmpty(removedLive.Errors);
         Assert.NotEmpty(removedAlias.Errors);
-    }
-
-    [Fact]
-    public void Command_ReportsAnScidThatIsntAGuidAsAParseError()
-    {
-        ParseResult result = Program.BuildRootCommand().Parse(
-            "xbl config download --seller-id 2 --scid notaguid --sandbox-id XDKS.1 --view draft --dest output");
-
-        Assert.Contains(result.Errors, error => error.Message.Contains("notaguid", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -180,7 +171,7 @@ public class GetDocumentsCommandTests
                 ("nsal.xml", "<ServiceNsal />"),
                 ("titlepriv.xml", "<TitlePrivileges />"));
             Directory.CreateDirectory(directory);
-            string existingEtagPath = Path.Combine(directory, "ALL.etag");
+            string existingEtagPath = Path.Combine(directory, "Title.etag");
             await File.WriteAllTextAsync(existingEtagPath, "\"old-etag\"");
             if (OperatingSystem.IsWindows())
             {
@@ -215,14 +206,14 @@ public class GetDocumentsCommandTests
             Assert.Equal("<TitlePrivileges />", await File.ReadAllTextAsync(
                 Path.Combine(directory, "titlepriv.xml")));
             Assert.Equal("\"etag-value\"", await File.ReadAllTextAsync(
-                Path.Combine(directory, "ALL.etag")));
+                Path.Combine(directory, "Title.etag")));
             if (OperatingSystem.IsWindows())
             {
                 Assert.True(
-                    (File.GetAttributes(Path.Combine(directory, "ALL.etag")) &
+                    (File.GetAttributes(Path.Combine(directory, "Title.etag")) &
                         FileAttributes.Hidden) != 0);
             }
-            Assert.Contains("\"version\":42", stdout.ToString(), StringComparison.Ordinal);
+            Assert.Contains("\"scope\":\"title\",\"view\":\"draft\",\"version\":42", stdout.ToString(), StringComparison.Ordinal);
             Assert.Empty(stderr.ToString());
         }
         finally
@@ -265,7 +256,7 @@ public class GetDocumentsCommandTests
                 CancellationToken.None);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("TYPE", stdout.ToString(), StringComparison.Ordinal);
+            Assert.Contains("SCOPE", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("SANDBOX", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("FILES", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("XDKS.1", stdout.ToString(), StringComparison.Ordinal);
@@ -530,7 +521,7 @@ public class GetDocumentsCommandTests
                 "download",
                 "--seller-id",
                 "2",
-                "--type",
+                "--scope",
                 "SANDBOX",
                 "--scid",
                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -550,6 +541,96 @@ public class GetDocumentsCommandTests
             Assert.Equal("published", body.RootElement.GetProperty("view").GetString());
             Assert.Equal("XDKS.1", body.RootElement.GetProperty("sandbox").GetString());
             Assert.True(File.Exists(Path.Combine(directory, "XDKS.1.etag")));
+        }
+        finally
+        {
+            Program.XboxPartnerClientFactory = null;
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("draft", "ALL", "working")]
+    [InlineData("published", "HIDDEN", "published")]
+    public async Task Command_WithTheTitleScope_ReadsTheTitleWideConfiguration(
+        string view, string sandbox, string serviceView)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"XboxDevCLI-{Guid.NewGuid():N}");
+        TextWriter originalOut = Console.Out;
+        TextWriter originalError = Console.Error;
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var handler = new MockHttpMessageHandler(CreateResponse(
+            CreateZipArchive(("nsal.xml", "<ServiceNsal />")), "\"etag-value\"", 42, serviceView));
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
+        Program.XboxPartnerClientFactory = configuration => new XboxPartnerClient(
+            configuration,
+            new HttpClient(handler),
+            () => Task.FromResult<string?>("caller-token"));
+        try
+        {
+            int exitCode = await Program.Main(
+            [
+                "xbl", "config", "download", "--seller-id", "2", "--scope", "title",
+                "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--view", view, "--dest", directory,
+            ]);
+
+            Assert.Equal(0, exitCode);
+            using var body = JsonDocument.Parse(handler.LastRequestBody!);
+            Assert.Equal(sandbox, body.RootElement.GetProperty("sandbox").GetString());
+            Assert.Equal(serviceView, body.RootElement.GetProperty("view").GetString());
+            Assert.True(File.Exists(Path.Combine(directory, "Title.etag")));
+        }
+        finally
+        {
+            Program.XboxPartnerClientFactory = null;
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("ALL", "draft", "working", "Title.etag")]
+    [InlineData("HIDDEN", "published", "published", "Title.etag")]
+    [InlineData("HIDDEN", "draft", "working", "HIDDEN.etag")]
+    public async Task Command_WithATitleWideSandboxByName_ReadsItAndNamesTheEtagFile(
+        string sandbox, string view, string serviceView, string etagFile)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"XboxDevCLI-{Guid.NewGuid():N}");
+        TextWriter originalOut = Console.Out;
+        TextWriter originalError = Console.Error;
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var handler = new MockHttpMessageHandler(CreateResponse(
+            CreateZipArchive(("nsal.xml", "<ServiceNsal />")), "\"etag-value\"", 42, serviceView));
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
+        Program.XboxPartnerClientFactory = configuration => new XboxPartnerClient(
+            configuration,
+            new HttpClient(handler),
+            () => Task.FromResult<string?>("caller-token"));
+        try
+        {
+            int exitCode = await Program.Main(
+            [
+                "xbl", "config", "download", "--seller-id", "2", "--sandbox-id", sandbox,
+                "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--view", view, "--dest", directory,
+            ]);
+
+            Assert.True(exitCode == 0, stderr.ToString());
+            using var body = JsonDocument.Parse(handler.LastRequestBody!);
+            Assert.Equal(sandbox, body.RootElement.GetProperty("sandbox").GetString());
+            Assert.True(File.Exists(Path.Combine(directory, etagFile)));
         }
         finally
         {

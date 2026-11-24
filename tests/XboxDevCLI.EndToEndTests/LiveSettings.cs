@@ -11,7 +11,8 @@ public enum LiveService
 }
 
 /// <summary>
-/// The harness inputs for a live run, read from <c>E2E_*</c> and GitHub OIDC variables.
+/// The harness inputs for a live run, read from <c>E2E_*</c> variables and the sign-in
+/// variables of the selected authentication mode.
 /// </summary>
 /// <remarks>
 /// The harness's own variables are deliberately not <c>XBOX_*</c>: the CLI reads every
@@ -25,15 +26,27 @@ internal sealed record LiveSettings(
     string CliDirectory,
     string Scope,
     string ClientId,
-    string TenantId)
+    string TenantId,
+    string AuthenticationMode)
 {
     internal const string CliPathVariable = "E2E_CLI_PATH";
     internal const string EnvironmentVariable = "E2E_GITHUB_ENVIRONMENT";
+    internal const string AuthenticationModeVariable = "E2E_AUTHENTICATION_MODE";
     internal const string ClientIdVariable = "XBOX_AUTHENTICATION__CLIENTID";
     internal const string TenantIdVariable = "XBOX_AUTHENTICATION__TENANTID";
     internal const string ScopesVariable = "XBOX_AZUREAD__SCOPES";
     internal const string OidcRequestUrlVariable = "ACTIONS_ID_TOKEN_REQUEST_URL";
     internal const string OidcRequestTokenVariable = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+    internal const string AzureConfigDirectoryVariable = "AZURE_CONFIG_DIR";
+
+    /// <summary>The CLI requests a GitHub Actions OIDC token itself.</summary>
+    internal const string GitHubOidcMode = "githuboidc";
+
+    /// <summary>
+    /// The CLI gets its token from an Azure CLI session the job signed in as the service
+    /// principal, such as an Azure Pipelines <c>AzureCLI@2</c> task.
+    /// </summary>
+    internal const string AzureCliMode = "azurecli";
 
     internal const string NotRequestedReason =
         "Live E2E tests run only when " + EnvironmentVariable + " is set.";
@@ -97,21 +110,43 @@ internal sealed record LiveSettings(
                 $"and {CliRunner.CandidateDefaultsFileName}.");
         }
 
-        foreach (var required in new[]
-                 {
-                     ClientIdVariable,
-                     TenantIdVariable,
-                     OidcRequestUrlVariable,
-                     OidcRequestTokenVariable,
-                 })
+        // The client and tenant IDs name the identity auth status must report in either mode.
+        foreach (var required in new[] { ClientIdVariable, TenantIdVariable })
         {
             if (string.IsNullOrWhiteSpace(getVariable(required)))
             {
-                errors.Add(
-                    required.StartsWith("ACTIONS_", StringComparison.Ordinal)
-                        ? $"{required} is not set. The job needs the id-token: write permission."
-                        : $"{required} is not set. Set it in GitHub environment '{profile.Environment}'.");
+                errors.Add($"{required} is not set. Set it in environment '{profile.Environment}'.");
             }
+        }
+
+        var mode = getVariable(AuthenticationModeVariable);
+        mode = string.IsNullOrWhiteSpace(mode) ? GitHubOidcMode : mode;
+        switch (mode)
+        {
+            case GitHubOidcMode:
+                foreach (var required in new[] { OidcRequestUrlVariable, OidcRequestTokenVariable })
+                {
+                    if (string.IsNullOrWhiteSpace(getVariable(required)))
+                    {
+                        errors.Add($"{required} is not set. The job needs the id-token: write permission.");
+                    }
+                }
+
+                break;
+            case AzureCliMode:
+                // The harness moves HOME for the CLI, so Azure CLI finds the job's session only
+                // through an explicit configuration directory.
+                if (string.IsNullOrWhiteSpace(getVariable(AzureConfigDirectoryVariable)))
+                {
+                    errors.Add(
+                        $"{AzureConfigDirectoryVariable} is not set. Sign Azure CLI in as the service principal " +
+                        $"with {AzureConfigDirectoryVariable} set, and run the tests in the same environment.");
+                }
+
+                break;
+            default:
+                errors.Add($"{AuthenticationModeVariable} must be '{GitHubOidcMode}' or '{AzureCliMode}'.");
+                break;
         }
 
         if (errors.Count > 0)
@@ -128,6 +163,7 @@ internal sealed record LiveSettings(
             Path.GetFullPath(cliDirectory!),
             scope,
             getVariable(ClientIdVariable)!,
-            getVariable(TenantIdVariable)!);
+            getVariable(TenantIdVariable)!,
+            mode);
     }
 }

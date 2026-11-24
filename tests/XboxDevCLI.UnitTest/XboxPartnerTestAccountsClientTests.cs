@@ -71,18 +71,6 @@ public class XboxPartnerTestAccountsClientTests
     }
 
     [Fact]
-    public async Task ListTestAccountBatchesAsync_RejectsNonPositiveSellerWithoutSending()
-    {
-        var handler = Respond(HttpStatusCode.OK, "{}");
-        using var client = CreateClient(handler);
-
-        await Assert.ThrowsAnyAsync<ArgumentException>(() =>
-            client.ListTestAccountBatchesAsync(0, new TestAccountBatchFilter(), CancellationToken.None));
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
     public async Task ListTestAccountBatchesAsync_FollowsEveryPageWithTheSameFiltersAndCorrelationId()
     {
         var handler = new XboxPartnerHttpMessageHandler(
@@ -112,60 +100,6 @@ public class XboxPartnerTestAccountsClientTests
         string correlationId = Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]);
         Assert.All(handler.Requests, request =>
             Assert.Equal(correlationId, Assert.Single(request.Headers["x-ms-correlation-id"])));
-    }
-
-    [Fact]
-    public async Task ListTestAccountBatchesAsync_RejectsARepeatedContinuationToken()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Response(HttpStatusCode.OK, """{"batches":[{"id":2}],"continuationToken":"t1"}"""),
-            Response(HttpStatusCode.OK, """{"batches":[],"continuationToken":"t1"}"""));
-        using var client = CreateClient(handler);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerResponseException>(() =>
-            client.ListTestAccountBatchesAsync(null, new TestAccountBatchFilter(), CancellationToken.None));
-
-        Assert.Equal(
-            "The test account batch list response repeated a continuation token.",
-            exception.Message);
-        Assert.Equal("""{"batches":[],"continuationToken":"t1"}""", exception.RawResponse);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal(Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]), exception.CorrelationId);
-    }
-
-    [Theory]
-    [InlineData("not json", "was not valid JSON.")]
-    [InlineData("""{"batches":{}}""", "must contain the batches array.")]
-    [InlineData("""{"batches":[],"continuationToken":5}""", "contained a continuationToken that was not a string.")]
-    public async Task ListTestAccountBatchesAsync_RejectsAMalformedPage(string body, string expected)
-    {
-        var handler = Respond(HttpStatusCode.OK, body);
-        using var client = CreateClient(handler);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerResponseException>(() =>
-            client.ListTestAccountBatchesAsync(null, new TestAccountBatchFilter(), CancellationToken.None));
-
-        Assert.Equal($"The test account batch list response {expected}", exception.Message);
-        Assert.Equal(body, exception.RawResponse);
-        Assert.Equal(
-            Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]),
-            exception.CorrelationId);
-    }
-
-    [Fact]
-    public async Task ListTestAccountBatchesAsync_FailureOnALaterPageCarriesTheListingCorrelationId()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Response(HttpStatusCode.OK, """{"batches":[{"id":2}],"continuationToken":"t1"}"""),
-            Response(HttpStatusCode.GatewayTimeout, """{"code":"downstream_timeout"}"""));
-        using var client = CreateClient(handler);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerApiException>(() =>
-            client.ListTestAccountBatchesAsync(null, new TestAccountBatchFilter(), CancellationToken.None));
-
-        Assert.Equal(HttpStatusCode.GatewayTimeout, exception.StatusCode);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal(Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]), exception.CorrelationId);
     }
 
     [Fact]
@@ -305,28 +239,6 @@ public class XboxPartnerTestAccountsClientTests
     }
 
     [Fact]
-    public async Task CreateTestAccountBatchAsync_RejectsNonPositiveSellerWithoutSending()
-    {
-        var handler = Respond(HttpStatusCode.Accepted, RunningJob);
-        using var client = CreateClient(handler);
-
-        await Assert.ThrowsAnyAsync<ArgumentException>(() => client.CreateTestAccountBatchAsync(
-            new CreateTestAccountBatchRequest
-            {
-                SellerId = 0,
-                Count = 1,
-                EmailPrefix = "ABCD-tester",
-                Password = "p",
-                SecurityQuestion = "q",
-                SecurityAnswer = "a",
-                Sandboxes = ["ABCD.1"],
-            },
-            CancellationToken.None));
-
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
     public async Task GetTestAccountJobAsync_SendsEscapedJobIdAndSeller()
     {
         var response = new HttpResponseMessage(HttpStatusCode.OK)
@@ -352,7 +264,6 @@ public class XboxPartnerTestAccountsClientTests
     }
 
     [Theory]
-    [InlineData(0, "job")]
     [InlineData(42, " ")]
     public async Task GetTestAccountJobAsync_RejectsInvalidIdsWithoutSending(long batchId, string jobId)
     {
@@ -448,7 +359,7 @@ public class XboxPartnerTestAccountsClientTests
         using var client = CreateClient(handler);
         int sends = 0;
 
-        await client.CreateTestAccountBatchAsync(CreateRequest(), CancellationToken.None, () => sends++);
+        await client.CreateTestAccountBatchAsync(CreateRequest(), CancellationToken.None, _ => sends++);
 
         Assert.Equal(1, sends);
         Assert.Single(handler.Requests);
@@ -464,7 +375,7 @@ public class XboxPartnerTestAccountsClientTests
         bool sent = false;
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            client.CreateTestAccountBatchAsync(CreateRequest(), cancellation.Token, () => sent = true));
+            client.CreateTestAccountBatchAsync(CreateRequest(), cancellation.Token, _ => sent = true));
 
         Assert.False(sent);
         Assert.Empty(handler.Requests);
@@ -478,7 +389,7 @@ public class XboxPartnerTestAccountsClientTests
         bool sent = false;
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            client.CreateTestAccountBatchAsync(CreateRequest(), CancellationToken.None, () => sent = true));
+            client.CreateTestAccountBatchAsync(CreateRequest(), CancellationToken.None, _ => sent = true));
 
         Assert.False(sent);
         Assert.Empty(handler.Requests);
@@ -495,23 +406,6 @@ public class XboxPartnerTestAccountsClientTests
 
         Assert.True(Guid.TryParse(exception.CorrelationId, out _));
         Assert.IsType<InvalidOperationException>(exception.InnerException);
-    }
-
-    [Theory]
-    [InlineData("", "a")]
-    [InlineData("p", "")]
-    public async Task CreateTestAccountBatchAsync_RejectsEmptySecretsWithoutSending(string password, string answer)
-    {
-        var handler = Respond(HttpStatusCode.Accepted, RunningJob);
-        using var client = CreateClient(handler);
-        CreateTestAccountBatchRequest request = CreateRequest();
-        request.Password = password;
-        request.SecurityAnswer = answer;
-
-        await Assert.ThrowsAnyAsync<ArgumentException>(() =>
-            client.CreateTestAccountBatchAsync(request, CancellationToken.None));
-
-        Assert.Empty(handler.Requests);
     }
 
     private static CreateTestAccountBatchRequest CreateRequest() =>

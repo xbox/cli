@@ -81,8 +81,12 @@ internal static class PlayerDataCommandFactory
         return data;
     }
 
-    private static Option<string?> VisibilityOption() =>
-        OptionalOption("--visibility", "Data tier: 'client' (default), 'read-only', or 'internal'.");
+    private static Option<string?> VisibilityOption()
+    {
+        var option = OptionalOption("--visibility", "Data tier: 'client' (default), 'read-only', or 'internal'.");
+        option.CompletionSources.Add(Visibilities);
+        return option;
+    }
 
     private static Option<bool> PublisherOption() =>
         new("--publisher") { Description = "Target publisher-scoped data (shared across the publisher's titles) instead of title data." };
@@ -132,6 +136,11 @@ internal static class PlayerDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: GetPaths,
+            Examples:
+            [
+                "xbox playfab player-data get --playfab-id PLAYER123",
+                "xbox playfab player-data get --playfab-id PLAYER123 --visibility read-only --key level --value-only",
+            ],
             LearnMore: [TierLearnMore]));
     }
 
@@ -259,6 +268,10 @@ internal static class PlayerDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: SetPaths,
+            Examples:
+            [
+                "xbox playfab player-data set --playfab-id PLAYER123 --visibility read-only --key level --value 5 --permission Public --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "PlayFab gives every key the request writes the same permission, replacing the one it had, " +
                 "so a Public key set again with '--permission Private' can no longer be read by other players.",
@@ -397,6 +410,10 @@ internal static class PlayerDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: SetPaths,
+            Examples:
+            [
+                "xbox playfab player-data delete --playfab-id PLAYER123 --keys level,legacyFlag --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "The named keys are removed through the update endpoint's KeysToRemove, so " +
                 "--confirm does not apply; only the keys named in --keys are affected.",

@@ -35,9 +35,9 @@ internal static class StatusCommandFactory
             var asJson = outputFormat != null;
             var compact = string.Equals(outputFormat, "json-compact", StringComparison.OrdinalIgnoreCase);
 
-            // A failure to read configuration, the sign-in settings, or the token cache is reported
-            // by the error boundary in this command's format (FormatError), and exits 1. Only an
-            // account that isn't in a readable cache is signed out.
+            // A failure to read the sign-in settings or the token cache is reported by the error
+            // boundary in this command's format (FormatError), and exits 1. Only an account that
+            // isn't in a readable cache is signed out.
             var authService = authFactory(parseResult);
             if (authService.IsAutomation)
             {
@@ -100,7 +100,10 @@ internal static class StatusCommandFactory
             return 0;
         });
 
-        return command.FormatsErrors(FormatError);
+        return command
+            .FormatsErrors(FormatError)
+            .WithMetadata(new CommandMetadata(
+                Examples: ["xbox auth status", "xbox auth status --output json"]));
     }
 
     /// <summary>

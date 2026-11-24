@@ -8,7 +8,7 @@ informational commands write text for people.
 ## Names and brand
 
 - Call the product the **XBOX CLI**. Don't call it "XBOX Developer CLI", "XBOX Dev CLI", or
-  "XboxDevCLI" in prose. The WinGet package ID, `Microsoft.Gaming.XBOXDeveloperCLI`, is an
+  "XboxDevCLI" in prose. The WinGet package ID, `XBOX.cli`, is an
   identifier and keeps its name.
 - Write the brand as **XBOX** in prose, never "Xbox".
 - Call XBOX's online services **XBOX services**, as in "XBOX services configuration," not
@@ -95,10 +95,22 @@ maintained.
   [Testing and coverage](docs/contributing/testing.md#live-end-to-end-tests)
   before opting in to real services.
 - The end-to-end tests in `tests/XboxDevCLI.E2ETest/` run the CLI against production as the
-  signed-in account, so they run only commands that read, and `xbl config save` and
-  `xbl config publish` with `--validate-only`, which XBOX services validate without storing anything.
-  A new test must do the same. The test files are the record of what runs, so `Cli.cs` has no
-  allowlist of commands: don't add one or any other guard, and don't ask for one in a review. See
+  signed-in account, so they must leave nothing behind. Without `[LiveWriteFact]`, a test may run
+  only:
+  - commands that read;
+  - `xbl config save --validate-only` of documents just downloaded and unchanged, or of a document
+    that can't be parsed, which XBOX services answer before storing anything (they store changed
+    documents to validate them);
+  - `xbl config publish --validate-only` of a sandbox to itself, for a game with XBOX services, or
+    of the account (any other validate-only publish writes);
+  - writes the service refuses, as long as the write would change nothing even if the refusal
+    failed.
+
+  Mark a test that sends any other write `[LiveWriteFact]`, which runs it only with
+  `XBOXDEVCLI_E2E_WRITE=true`. Never create anything that can't be deleted, such as a game,
+  sandbox, or test account, never publish a playtest or configuration, and never let a test bind or
+  unbind a game for real. The test files are the record of what runs, so `Cli.cs` has no allowlist
+  of commands: don't add one or any other guard, and don't ask for one in a review. See
   [Testing and coverage](docs/contributing/testing.md#end-to-end-tests-with-your-own-account).
 - Measure coverage with
   `dotnet test --collect:"XPlat Code Coverage" --settings coverage.runsettings`. Checked-in
@@ -118,6 +130,9 @@ maintained.
   `Program.BuildRootCommand`. PlayFab command families live in
   `src/XboxDevCLI/PlayFab/Commands/` and are wired through `PlayFabCommandFactory`.
 - Add a command to the nearest command-family factory rather than growing `Program.cs`.
+- Give every leaf command at least one Help example in `CommandMetadata.Examples`; a unit
+  test fails for a command without one, and another checks that each example parses to its
+  own command.
 - Route PlayFab calls through `Program.InvokeApiAsync` or the shared command invoker,
   never an ad hoc `PlayFabApiClient` path. The shared route owns configuration,
   authentication, output, and destructive confirmation.
@@ -153,9 +168,10 @@ single record, decide whether it deserves a view, and if so:
 - Pick a handful of columns a reader wants at a glance, not every scalar on the model — a
   row has to fit a terminal, and inferring columns is what makes `az ... --output table`
   lossy. Columns must name scalar fields; use a dotted path to reach inside a nested
-  object. When each record holds a list of the records worth showing, such as roles
-  holding members, set the view's `Expand`; when they're split across several lists, use
-  `TableView.Merged`, and set `OnlyIn` on a column that only some of those lists have.
+  object, or a `Transform` to reduce a list to a scalar, such as a count. When each record
+  holds a list of the records worth showing, such as roles holding members, set the view's
+  `Expand`; when they're split across several lists, use `TableView.Merged`, and set
+  `OnlyIn` on a column that only some of those lists have.
 - Set `Redact: true` on any column holding a credential. Tables end up in screenshots and
   scrollback; JSON still returns the real value.
 - If the command formats its own response rather than using the shared invoke path, it
@@ -207,6 +223,9 @@ result. Accurate isn't the same as needed.
 - Document a case only when a realistic reader will meet it.
 - Say what a command doesn't do only when a reader would expect it to.
 - Explain why only when the reason changes what the reader does.
+- Don't restate in words what an option's name, an example, or a command's output already
+  shows, and don't tell readers how to write their scripts. Give the facts a script depends
+  on, such as exit codes and which output can change between releases.
 - Keep tutorials on the common path, and put exceptions on the reference page.
 - Make every code block work when pasted whole. Put alternatives, and examples that change
   something, in separate blocks; a list of read-only examples can share one.
@@ -215,6 +234,26 @@ result. Accurate isn't the same as needed.
 - Warn only when a command does something its name doesn't tell the reader, such as removing
   what you didn't name, making a change you can't reverse, or reaching players or
   certification. Don't warn that a command which changes something changes it.
+
+Help and the docs are read on every platform, so examples must work in PowerShell and in a
+POSIX shell:
+
+- Write a relative path with `/`, such as `save.json` or `xbox-config/save.json`, or as
+  `./name` when it needs a prefix. Never use `\`.
+- Write an absolute path in sample output as `<path>` in Help, and under `D:\NodArena\`, such
+  as `D:\NodArena\save.json`, in the docs.
+- Keep a command on one line. Don't continue lines with `\` or a backtick.
+- When a step needs syntax for one shell, such as setting an environment variable, give an
+  "In bash or zsh:" block followed by an "In PowerShell:" block.
+- In the docs, pass a JSON request body by piping it, as in
+  `echo '{"Keys":["MyKey"]}' | xbox playfab api /Admin/GetTitleData --body-file -`, rather than
+  inline with `--body`, which Windows PowerShell 5.1 breaks. Keep the piped JSON free of
+  backslashes, which `echo` in zsh and some other shells interprets; if the body needs one,
+  save it to a file and pass `--body-file <file>`. When the command can't read stdin,
+  say what to use instead. Link to
+  [Windows PowerShell 5.1](docs/playfab-api.md#windows-powershell-51) rather than
+  repeating the explanation.
+- Steps for one platform, such as installing on Windows, use that platform's paths and shell.
 
 Write for developers who are comfortable with a terminal, and define XBOX, Partner Center,
 and PlayFab concepts on first use. Address the reader as *you*, in the present tense and

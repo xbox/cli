@@ -64,7 +64,9 @@ internal static class CommandLineExperience
             Description = "Show help for any command",
         };
         helpCommand.Arguments.Add(pathArgument);
-        helpCommand.WithMetadata(new CommandMetadata(Category: HelpCategory.Support));
+        helpCommand.WithMetadata(new CommandMetadata(
+            Category: HelpCategory.Support,
+            Examples: ["xbox help", "xbox help playfab mps build list"]));
 
         helpCommand.Action = new HelpRenderingAction(parseResult =>
         {

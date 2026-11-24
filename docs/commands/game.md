@@ -103,19 +103,19 @@ including the SCID and development sandbox, without truncating. Missing values s
 
 ## Creating a game
 
+Neither the CLI nor Partner Center can delete a game. If you belong to several sellers,
+check [the known issue](../known-issues.md#xbox-game-commands-ignore---seller-id) first: the game
+can be created in another seller.
+
 ```bash
-xbox game create --name "Nod Arena" \
-  --supported-device xbox --supported-device desktop \
-  --sandbox-id TESTSB.42 --seller-id 1234567 --confirm
+xbox game create --name "Nod Arena" --supported-device xbox --supported-device desktop --sandbox-id TESTSB.42 --seller-id 1234567
 ```
 
-`game create` asks before it creates the game; without a terminal, it needs `--confirm`. The CLI
-can't delete a game. If you belong to several sellers, check
-[the known issue](../known-issues.md#xbox-game-commands-ignore---seller-id) first: the game can be
-created in another seller.
+`game create` asks before it creates the game; without a terminal, it needs `--confirm`.
 
 The command sends the request once, waits up to two minutes for the creation job, and writes the
-job to stdout. The job ID, correlation ID, and commands to check on the job go to stderr. If the
+job to stdout. It retries brief failures reading the job, such as throttling or a dropped
+connection. The job ID, correlation ID, and commands to check on the job go to stderr. If the
 wait ends first, the job keeps running: check it with `game job get`, and don't create the game
 again.
 
@@ -155,9 +155,7 @@ Save a seller once, then create a game, which uses it:
 ```bash
 xbox context set seller-id 1234567
 
-xbox game create --name "Nod Arena" \
-  --supported-device xbox --supported-device desktop \
-  --sandbox-id TESTSB.42 --confirm
+xbox game create --name "Nod Arena" --supported-device xbox --supported-device desktop --sandbox-id TESTSB.42
 ```
 
 If the wait ends before the job does, check the job instead of creating the game again. Use the job

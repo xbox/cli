@@ -29,15 +29,15 @@ internal interface IXboxPartnerClient : IDisposable
         Action<int>? pageRead = null);
 
     /// <remarks>
-    /// <paramref name="onSending"/> is called immediately before the request is handed to the
-    /// network. A failure before it is called means the gateway never saw the request.
+    /// <paramref name="onSending"/> is called with the request's correlation ID immediately before the
+    /// request is handed to the network. A failure before it is called means the gateway never saw the request.
     /// </remarks>
     Task<XboxPartnerGameCreationJob> CreateGameAsync(
         string baseUrl,
         string sellerId,
         CreateXboxGameRequest request,
         CancellationToken cancellationToken = default,
-        Action? onSending = null);
+        Action<string>? onSending = null);
 
     Task<XboxPartnerGameCreationJob> GetGameCreationJobAsync(
         string baseUrl,
@@ -116,7 +116,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         string sellerId,
         CreateXboxGameRequest request,
         CancellationToken cancellationToken = default,
-        Action? onSending = null) =>
+        Action<string>? onSending = null) =>
         SendJobAsync<XboxPartnerGameCreationJob>(
             HttpMethod.Post,
             baseUrl,
@@ -149,14 +149,16 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         string sellerId,
         string? jsonBody,
         CancellationToken cancellationToken,
-        Action? onSending = null)
+        Action<string>? onSending = null)
         where TJob : XboxPartnerCreationJob
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
         sellerId = sellerId.Trim();
         var uri = BuildRequestUri(baseUrl, path);
+        string correlationId = Guid.NewGuid().ToString();
         var response = await SendAuthorizedAsync(
-            uri, sellerId, cancellationToken, method, jsonBody, Guid.NewGuid().ToString(), onSending);
+            uri, sellerId, cancellationToken, method, jsonBody, correlationId,
+            onSending is null ? null : () => onSending(correlationId));
         try
         {
             XboxPartnerCreationJob? job = JsonSerializer.Deserialize<TJob>(response.Body);
@@ -244,7 +246,8 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
     /// <remarks>
     /// A repeated token would loop forever, so it fails the listing, and so does a listing that
     /// doesn't end within <paramref name="maxPages"/> pages. With <paramref name="stopAtFirstMatch"/>,
-    /// the first page that has items ends the listing.
+    /// the first page that has items ends the listing, and <paramref name="stop"/> ends it after
+    /// any page but the last for which it returns true.
     /// </remarks>
     private async Task<IReadOnlyList<string>> ReadEveryPageAsync(
         string collection,
@@ -257,7 +260,8 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         string? baseUrl = null,
         string? sellerId = null,
         bool stopAtFirstMatch = false,
-        int maxPages = int.MaxValue)
+        int maxPages = int.MaxValue,
+        Func<bool>? stop = null)
     {
         var correlationId = Guid.NewGuid().ToString();
         var items = new List<string>();
@@ -272,8 +276,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
                 method, BuildRequestUri(baseUrl ?? GetConfiguredBaseUrl(), path), content, "application/json",
                 cancellationToken, correlationId, sellerId: sellerId);
             responseReceived?.Invoke(response, correlationId);
-            using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-            string body = await ReadResponseBodyWithLimitAsync(response.Content, bodyTimeout.Token);
+            string body = await ReadResponseBodyAsync(response, correlationId, cancellationToken);
             try
             {
                 var page = ReadPage(body, collection, description);
@@ -293,6 +296,11 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
                 }
 
                 continuationToken = page.ContinuationToken;
+                if (continuationToken != null && stop?.Invoke() == true)
+                {
+                    break;
+                }
+
                 if (continuationToken != null && !seenTokens.Add(continuationToken))
                 {
                     throw new InvalidDataException(
@@ -420,19 +428,19 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         Action? onSending = null,
         IReadOnlyList<KeyValuePair<string, string>>? headers = null)
     {
+        string sentCorrelationId = correlationId ?? Guid.NewGuid().ToString();
         using HttpResponseMessage response = await SendResponseAsync(
             method,
             requestUri,
             jsonBody is null ? null : new StringContent(jsonBody, Encoding.UTF8, "application/json"),
             "application/json",
             cancellationToken,
-            correlationId,
+            sentCorrelationId,
             onSending,
             sellerId: sellerId,
             headers: headers);
-        using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-        string body = await ReadResponseBodyWithLimitAsync(response.Content, bodyTimeout.Token);
-        return new GatewayResponse(body, ReadRetryAfter(response), ReadCorrelationId(response) ?? correlationId);
+        string body = await ReadResponseBodyAsync(response, sentCorrelationId, cancellationToken);
+        return new GatewayResponse(body, ReadRetryAfter(response), ReadCorrelationId(response) ?? sentCorrelationId);
     }
 
     private sealed record GatewayResponse(string Body, TimeSpan? RetryAfter, string? CorrelationId);
@@ -480,6 +488,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         string? correlationId = null,
         string serviceName = "The")
     {
+        correlationId ??= Guid.NewGuid().ToString();
         using HttpResponseMessage response = await SendResponseAsync(
             method,
             relativePath,
@@ -489,11 +498,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
             correlationId,
             sending: beforeDispatch,
             serviceName: serviceName);
-        using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-        return await ReadResponseBodyWithLimitAsync(
-            response.Content,
-            bodyTimeout.Token,
-            serviceName);
+        return await ReadResponseBodyAsync(response, correlationId, cancellationToken, serviceName);
     }
 
     private Task<HttpResponseMessage> SendResponseAsync(
@@ -502,7 +507,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         HttpContent? content,
         string accept,
         CancellationToken cancellationToken,
-        string? correlationId = null,
+        string correlationId,
         Action? sending = null,
         string serviceName = "The") =>
         SendResponseAsync(
@@ -525,7 +530,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         HttpContent? content,
         string accept,
         CancellationToken cancellationToken,
-        string? correlationId = null,
+        string correlationId,
         Action? sending = null,
         string serviceName = "The",
         string? sellerId = null,
@@ -538,10 +543,7 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         };
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
         request.Headers.UserAgent.ParseAdd(CliIdentity.UserAgent);
-        if (correlationId != null)
-        {
-            request.Headers.Add(CorrelationIdHeader, correlationId);
-        }
+        request.Headers.Add(CorrelationIdHeader, correlationId);
 
         foreach (var (name, value) in headers ?? [])
         {
@@ -584,10 +586,21 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
         }
-        catch (Exception ex) when (ex is HttpRequestException
-            || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        catch (HttpRequestException ex)
         {
             TelemetryRecorder.RecordError(TelemetryErrorTypes.Transport);
+            var failure = NetworkErrors.WithCause(ex);
+            if (!NeverReachedService(ex))
+            {
+                failure.Data[CorrelationIdHeader] = correlationId;
+            }
+
+            throw failure;
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            TelemetryRecorder.RecordError(TelemetryErrorTypes.Transport);
+            ex.Data[CorrelationIdHeader] = correlationId;
             throw;
         }
         // Many commands catch and format the gateway's failure themselves, so its reason is recorded here.
@@ -636,6 +649,36 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
             retryAfter);
     }
 
+    /// <summary>
+    /// The correlation ID of a request that failed without a readable response, such as a timeout, a
+    /// dropped connection, or a body that stopped arriving, from <paramref name="exception"/> or any
+    /// exception it wraps; null for other failures, including service and response errors, which carry
+    /// their own.
+    /// </summary>
+    internal static string? TransportCorrelationId(Exception? exception)
+    {
+        for (; exception is not null and not XboxPartnerApiException and not XboxPartnerResponseException;
+            exception = exception.InnerException)
+        {
+            if (exception.Data[CorrelationIdHeader] is string correlationId)
+            {
+                return correlationId;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="exception"/> is a name resolution or TLS failure. Such a request never
+    /// reached the service, which has no log of its correlation ID.
+    /// </summary>
+    internal static bool NeverReachedService(Exception exception) =>
+        exception is HttpRequestException
+        {
+            HttpRequestError: HttpRequestError.NameResolutionError or HttpRequestError.SecureConnectionError,
+        };
+
     private static string? ReadCorrelationId(HttpResponseMessage response) =>
         response.Headers.TryGetValues(CorrelationIdHeader, out var values)
             ? values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
@@ -661,18 +704,61 @@ internal sealed partial class XboxPartnerClient : IXboxPartnerClient
         string relativePath,
         CancellationToken cancellationToken)
     {
+        string correlationId = Guid.NewGuid().ToString();
         using HttpResponseMessage response = await SendResponseAsync(
             HttpMethod.Get,
             relativePath,
             content: null,
             "application/xml",
-            cancellationToken);
+            cancellationToken,
+            correlationId);
+        return await ReadResponseBytesAsync(
+            response, correlationId, _maxResponseBytes, "XboxPartner:MaxResponseBytes", cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads the body of a success response. A failure that isn't the caller's cancellation, such as a
+    /// stalled or dropped body, carries the request's correlation ID, as a timeout or dropped connection
+    /// before a response does.
+    /// </summary>
+    private async Task<string> ReadResponseBodyAsync(
+        HttpResponseMessage response,
+        string sentCorrelationId,
+        CancellationToken cancellationToken,
+        string serviceName = "The")
+    {
         using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-        return await ReadResponseBytesWithLimitAsync(
-            response.Content,
-            _maxResponseBytes,
-            "XboxPartner:MaxResponseBytes",
-            bodyTimeout.Token);
+        try
+        {
+            return await ReadResponseBodyWithLimitAsync(response.Content, bodyTimeout.Token, serviceName);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or HttpRequestException
+            && !cancellationToken.IsCancellationRequested)
+        {
+            ex.Data[CorrelationIdHeader] = ReadCorrelationId(response) ?? sentCorrelationId;
+            throw;
+        }
+    }
+
+    private async Task<byte[]> ReadResponseBytesAsync(
+        HttpResponseMessage response,
+        string sentCorrelationId,
+        long maxResponseBytes,
+        string configurationKey,
+        CancellationToken cancellationToken)
+    {
+        using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
+        try
+        {
+            return await ReadResponseBytesWithLimitAsync(
+                response.Content, maxResponseBytes, configurationKey, bodyTimeout.Token);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or HttpRequestException
+            && !cancellationToken.IsCancellationRequested)
+        {
+            ex.Data[CorrelationIdHeader] = ReadCorrelationId(response) ?? sentCorrelationId;
+            throw;
+        }
     }
 
     // ResponseHeadersRead keeps the size bound, but HttpClient's timeout ends at the

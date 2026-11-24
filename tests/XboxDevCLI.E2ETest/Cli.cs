@@ -20,10 +20,12 @@ internal static class Cli
         RunAsync([.. arguments, "--seller-id", E2ESettings.Current.SellerId, "--output", "json-compact"]);
 
     /// <summary>Runs a command.</summary>
-    public static async Task<CliResult> RunAsync(params string[] arguments)
+    public static Task<CliResult> RunAsync(params string[] arguments) => RunAsync(E2ESettings.Current.Cli, arguments);
+
+    /// <summary>Runs a command with the <c>xbox</c> executable at <paramref name="cli"/>.</summary>
+    public static async Task<CliResult> RunAsync(string cli, IReadOnlyList<string> arguments)
     {
         string commandLine = string.Join(' ', arguments.Select(Quote));
-        string cli = E2ESettings.Current.Cli;
         var startInfo = new ProcessStartInfo(cli)
         {
             RedirectStandardInput = true,
@@ -99,6 +101,22 @@ internal sealed class CliResult(string commandLine, int? exitCode, string stdout
         {
             throw new XunitException($"Expected JSON on stdout: {exception.Message}{Environment.NewLine}{this}");
         }
+    }
+
+    /// <summary>
+    /// Checks that the command failed because the service answered HTTP <paramref name="status"/>: exit code 1,
+    /// nothing on stdout, and the request's correlation ID and the status on stderr, as text or as the fields of the
+    /// compact JSON error that the <c>xbl</c> and <c>test-account</c> commands write.
+    /// </summary>
+    public void CheckServiceError(int status)
+    {
+        Check(exitCode == 1, "Expected exit code 1.");
+        Check(string.IsNullOrWhiteSpace(stdout), "Expected nothing on stdout.");
+        string code = status.ToString(CultureInfo.InvariantCulture);
+        Check(
+            (stderr.Contains("x-ms-correlation-id:", StringComparison.Ordinal) && stderr.Contains($"HTTP {code}", StringComparison.Ordinal)) ||
+                (stderr.Contains("\"correlationId\":", StringComparison.Ordinal) && stderr.Contains($"\"status\":{code}", StringComparison.Ordinal)),
+            $"Expected the correlation ID and HTTP {code} on stderr.");
     }
 
     public void Check([DoesNotReturnIf(false)] bool condition, string expectation)

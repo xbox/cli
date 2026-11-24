@@ -8,9 +8,10 @@ namespace XboxDevCLI.E2ETest;
 /// with <c>XBOX_</c>, because the CLI reads every <c>XBOX_</c> variable as its own configuration.
 /// </summary>
 /// <remarks>
-/// Each value names something that already exists for the signed-in account, because the tests
-/// only read. The tests are skipped until every setting is set, unless
-/// <c>XBOXDEVCLI_E2E_REQUIRED</c> is <c>true</c>, which makes them fail instead.
+/// Each value names something that already exists for the signed-in account. The tests are
+/// skipped until every setting is set, unless <c>XBOXDEVCLI_E2E_REQUIRED</c> is <c>true</c>, which
+/// makes them fail instead. The tests that write also need <c>XBOXDEVCLI_E2E_WRITE</c> set to
+/// <c>true</c>.
 /// </remarks>
 internal sealed class E2ESettings
 {
@@ -32,8 +33,9 @@ internal sealed class E2ESettings
         GameJobId = Read("GAME_JOB_ID");
         Sandbox = Read("SANDBOX");
         AchievementImageId = Read("ACHIEVEMENT_IMAGE_ID");
+        PlaytestId = Read("PLAYTEST_ID");
+        AudienceId = Read("AUDIENCE_ID");
         BatchKeyword = Read("BATCH_KEYWORD");
-        BatchJobId = Read("BATCH_JOB_ID");
     }
 
     /// <summary>The settings, once every one is set.</summary>
@@ -41,10 +43,13 @@ internal sealed class E2ESettings
         Instance.Problem is { } problem ? throw new InvalidOperationException(problem) : Instance;
 
     /// <summary>Why the tests are skipped, or null when they run.</summary>
-    public static string? SkipReason =>
-        bool.TryParse(Environment.GetEnvironmentVariable(Prefix + "REQUIRED"), out bool required) && required
+    public static string? SkipReason => IsTrue("REQUIRED") ? null : Instance.Problem;
+
+    /// <summary>Why the tests that write are skipped, or null when they run.</summary>
+    public static string? WriteSkipReason =>
+        SkipReason ?? (IsTrue("WRITE")
             ? null
-            : Instance.Problem;
+            : $"Set {Prefix}WRITE=true to run the tests that write. See docs/contributing/testing.md.");
 
     /// <summary>The absolute path of the <c>xbox</c> executable under test.</summary>
     public string Cli { get; }
@@ -76,17 +81,23 @@ internal sealed class E2ESettings
     /// <summary>One of the game's achievement image asset IDs.</summary>
     public string AchievementImageId { get; }
 
+    /// <summary>A playtest of the game that stays, so not one that another test creates and deletes.</summary>
+    public string PlaytestId { get; }
+
+    /// <summary>An audience of the seller with at least one member.</summary>
+    public string AudienceId { get; }
+
     /// <summary>A tag that exactly one of the account's test account batches has.</summary>
     public string BatchKeyword { get; }
-
-    /// <summary>The job that created that batch.</summary>
-    public string BatchJobId { get; }
 
     private string? Problem =>
         _missing.Count == 0
             ? null
             : $"End-to-end test settings aren't set: {string.Join(", ", _missing)}. "
                 + "See docs/contributing/testing.md.";
+
+    private static bool IsTrue(string name) =>
+        bool.TryParse(Environment.GetEnvironmentVariable(Prefix + name), out bool value) && value;
 
     private string Read(string name)
     {

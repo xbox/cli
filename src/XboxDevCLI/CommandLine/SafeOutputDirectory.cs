@@ -61,7 +61,8 @@ internal static class SafeOutputDirectory
             if ((attributes & FileAttributes.ReparsePoint) != 0 && !IsSystemLink(path))
             {
                 throw new IOException(
-                    $"The output directory path contains a reparse point: '{path}'.");
+                    $"The output directory path contains a reparse point, such as a symbolic link or junction: '{path}'. "
+                    + "Pass a --dest whose folders aren't links.");
             }
 
             if ((attributes & FileAttributes.Directory) == 0)

@@ -34,17 +34,29 @@ without one, they refuse unless you pass `--confirm` (`--yes`, `-y`):
 | Any PlayFab `Delete*` or `Shutdown*` operation, through any command, including `playfab api` | Always |
 | `playfab economy inventory operation execute` | When the batch contains a `Delete` operation. It refuses without `--confirm`, even in a terminal. |
 | `playfab api-policy set --overwrite` | Always. It refuses without `--confirm`, even in a terminal. |
-| [`audience create`, `audience update`](commands/audience.md) | Always |
+| [`audience create`, `audience update`](commands/audience.md) | Always, except `audience update --dry-run`, which only reads. |
 | [`game create`](commands/game.md) | Always |
 | [`playtest create`, `update`, `publish`, `delete`](commands/playtest.md) | Always |
 | [`sandbox create`](commands/sandbox.md) | Always |
 | [`test-account batch create`, `update`, `delete`](commands/test-account.md) | Always |
-| [`xbl config publish`](commands/xbl.md#config-publish) | To RETAIL, CERT, CERT.DEBUG, or HIDDEN, or from another sandbox. Never with `--validate-only`. |
+| [`xbl binding create`, `delete`](commands/xbl/binding.md) | Always |
+| [`xbl business-partner create`](commands/xbl/business-partner.md) | Always |
+| [`xbl global-storage delete`](commands/xbl/global-storage.md) | Always |
+| [`xbl relying-party create`](commands/xbl/relying-party.md) | Always |
+| [`xbl web-service delete`, `certificate create`](commands/xbl/web-service.md) | Always |
+| [`xbl config publish`](commands/xbl.md#config-publish) | To RETAIL, CERT, or CERT.DEBUG, with `--scope title` or `--scope account`, or from another sandbox. Never with `--validate-only`. |
 | [`xbl config save`, `xbl config publish`](commands/xbl.md#title-targeting) by `--title-id` | When other titles share the configuration. `--allow-shared-configuration` skips the question; `--confirm` doesn't. |
 | [`pc sandbox set`](commands/pc.md) | Always |
 
 ## What a command's name doesn't tell you
 
+- [`game create`](commands/game.md#creating-a-game),
+  [`sandbox create`](commands/sandbox.md#creating-a-sandbox), and
+  [`xbl business-partner create`](commands/xbl/business-partner.md) make something that cannot be
+  deleted by the CLI or in Partner Center.
+- [`xbl relying-party create`](commands/xbl/relying-party.md) registers the relying party's name
+  across XBOX services at once, though its settings wait for an account publish. Nobody can rename,
+  delete, or reuse the name.
 - If [`playfab service-principal set`](commands/playfab/service-principal.md) fails, the service
   principal might have no access in the studio until a `set` succeeds, which can stop a
   pipeline that signs in as it. Pass `--expected-version` so `set` fails instead of overwriting
@@ -55,8 +67,22 @@ without one, they refuse unless you pass `--confirm` (`--yes`, `-y`):
 - [`xbl config publish`](commands/xbl.md#cross-sandbox-publishing-replaces-global-title-storage-files)
   from another sandbox replaces the destination's global title storage files with the
   source's, and deletes files only the destination has. The deleted files can't be recovered.
-- `xbl config publish --sandbox-id HIDDEN` publishes the title-wide configuration, which every
-  sandbox uses, RETAIL included.
+- [`xbl config publish --scope title`](commands/xbl.md#title-wide-publishing) publishes the
+  title-wide configuration, which every sandbox uses, RETAIL included. Its stats system,
+  privilege, and single sign-on changes go live in each sandbox only when that sandbox publishes.
+- [`xbl binding create`](commands/xbl/binding.md) publishes the title-wide configuration of both
+  games, and `xbl binding delete` publishes the game's own, as `xbl config publish --scope title`
+  does. A title-wide change that was saved but not published, such as an embargo in
+  `productdeveloper.xml`, goes live in every sandbox, RETAIL included.
+- A save to the title draft changes no sandbox, but the next publish of any sandbox, RETAIL
+  included, makes the title draft's stats and achievements systems, privileges, and single sign-on
+  endpoints live there, whoever runs it. See
+  [XBOX services settings](xbox-services-settings.md#change-a-title-setting).
+- [`xbl web-service certificate create`](commands/xbl/web-service.md#creating-a-certificate)
+  creates a certificate that works for about 18 months and that neither the CLI nor Partner Center
+  can revoke; [Web services](commands/xbl/web-service.md) says how to have XBOX revoke one whose
+  key leaked. [`xbl web-service delete`](commands/xbl/web-service.md) doesn't take away the web
+  service's access, so its certificates keep working, with that access, until they expire.
 
 ## An interrupted write reports that its outcome is unknown
 
@@ -70,11 +96,16 @@ Request failed: /Admin/SetTitleData may have reached PlayFab, but the request wa
 
 | Commands | Exit code when the outcome is unknown |
 | --- | --- |
-| `audience create` and `update`, `playtest create`, `update`, `publish`, and `delete`, `sandbox create`, `test-account batch create`, `update`, and `delete`, and `xbl config save` and `publish` | `3` |
+| `audience create` and `update`, `playtest create`, `update`, `publish`, and `delete`, `sandbox create`, `test-account batch create`, `update`, and `delete`, `xbl binding create` and `delete`, `xbl business-partner create` and `save`, `xbl config save` and `publish`, `xbl global-storage upload` and `delete`, `xbl relying-party create` and `save`, and `xbl web-service create`, `update`, `delete`, and `certificate create` | `3` |
 | Other commands, including every `playfab` command | `1`, except `game create`, which exits `130` when you press Ctrl+C after it sends the request. When PlayFab answered with error JSON, the JSON on stderr also has an `outcomeUnknown` field. |
 
 Read the affected state before running the change again. Commands outside `playfab` print a
-read-only command to check with. The CLI never retries a change on its own.
+read-only command to check with. After
+[`xbl web-service certificate create`](commands/xbl/web-service.md#exit-codes), there's nothing to
+read: a certificate created then can't be retrieved, so run the command again. The CLI never
+retries a change on its own.
 
 Some commands that wait for a job exit with `4` when the request was accepted but the wait
-ended. Don't run them again; see the command's page for how to keep waiting.
+ended. Don't run them again; see the command's page for how to keep waiting. The exception is
+[`xbl config publish --scope account`](commands/xbl.md#account-publishing), which is safe to run
+again.

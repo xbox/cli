@@ -82,7 +82,7 @@ internal static partial class TestAccountCommandFactory
         command.Options.Add(timeoutOption);
         command.Validators.Add(result =>
         {
-            if (result.GetValue(noWaitOption) && result.GetResult(timeoutOption) is { Implicit: false })
+            if (result.GetFlag(noWaitOption) && result.GetResult(timeoutOption) is { Implicit: false })
             {
                 result.AddError("--no-wait and --timeout cannot be combined.");
             }
@@ -135,17 +135,17 @@ internal static partial class TestAccountCommandFactory
 
         Program.WriteVerbose(verbose, () => $"Deleting test account batch {id} using the signed in Entra ID token");
         stderr.WriteLine($"Deleting test account batch {id}...");
-        bool sent = false;
+        string? sentCorrelationId = null;
         TestAccountBatchDeletionResult accepted;
         try
         {
             // Sent once. Every failure that could follow the request leaving the process is
             // reported as an unknown outcome rather than retried.
             accepted = await client.DeleteTestAccountBatchAsync(
-                    sellerId, batchId, allowNotMine, cancellationToken, () => sent = true)
+                    sellerId, batchId, allowNotMine, cancellationToken, correlationId => sentCorrelationId = correlationId)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception) when (!sent)
+        catch (Exception exception) when (sentCorrelationId is null)
         {
             stderr.WriteLine(exception is OperationCanceledException
                 ? "Canceled before the delete was sent. Nothing was deleted."
@@ -156,7 +156,7 @@ internal static partial class TestAccountCommandFactory
         {
             stderr.WriteLine(FormatError(exception, output.IsCompact));
             WriteDeleteOutcomeUnknown(id, getBatch, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
         catch (XboxPartnerApiException exception)
         {
@@ -175,7 +175,7 @@ internal static partial class TestAccountCommandFactory
             XboxPartnerCommandSupport.WriteCorrelationId(exception.CorrelationId, stderr);
             stderr.WriteLine($"The service accepted the request, but its response could not be read: {exception.Message}");
             WriteDeleteOutcomeUnknown(id, getBatch, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
         // ConnectionError is left out for the same reason as the create: a failed connect does not
         // prove an earlier attempt on a pooled connection never reached the service.
@@ -187,6 +187,7 @@ internal static partial class TestAccountCommandFactory
         }
         catch (Exception exception)
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(exception, stderr, sentCorrelationId);
             stderr.WriteLine(exception switch
             {
                 OperationCanceledException when cancellationToken.IsCancellationRequested =>
@@ -197,7 +198,7 @@ internal static partial class TestAccountCommandFactory
                 _ => $"The delete was sent, but failed before its answer could be read: {exception.Message}",
             });
             WriteDeleteOutcomeUnknown(id, getBatch, stderr);
-            return OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
 
         TestAccountBatchDeletion deletion = accepted.Deletion;

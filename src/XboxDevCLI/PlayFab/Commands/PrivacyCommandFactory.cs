@@ -60,6 +60,10 @@ internal static class PrivacyCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: ["/Admin/ExportMasterPlayerData"],
+            Examples:
+            [
+                "xbox playfab privacy export --playfab-id PLAYER123 --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "The CLI doesn't return the data. When the export is ready, PlayFab emails a " +
                 "download link to the notification email address configured for the title. The " +
@@ -113,7 +117,12 @@ internal static class PrivacyCommandFactory
                     output, stdout, stderr,
                     cancellationToken)));
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: ["/Admin/GetPlayedTitleList"]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: ["/Admin/GetPlayedTitleList"],
+            Examples:
+            [
+                "xbox playfab privacy played-titles --playfab-id PLAYER123",
+            ]));
     }
 
     /// <summary>

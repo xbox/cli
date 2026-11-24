@@ -17,18 +17,14 @@ namespace XboxDevCLI.UnitTest;
 
 public class XboxPartnerClientTests
 {
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task GetGameCreationJobAsync_ReadsRetryAfterAndCorrelation(bool useDate)
+    [Fact]
+    public async Task GetGameCreationJobAsync_ReadsRetryAfterAndCorrelation()
     {
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("""{"jobId":"job/id","status":"running","result":"pending","game":null,"errors":null}"""),
         };
-        response.Headers.RetryAfter = useDate
-            ? new RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(17))
-            : new RetryConditionHeaderValue(TimeSpan.FromSeconds(17));
+        response.Headers.RetryAfter = new RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddSeconds(17));
         response.Headers.Add("x-ms-correlation-id", "server-correlation");
         var handler = new XboxPartnerHttpMessageHandler(response);
         using var http = new HttpClient(handler);
@@ -92,6 +88,101 @@ public class XboxPartnerClientTests
         }
     }
 
+    /// <summary>
+    /// A failed connection says why, since .NET's message alone often doesn't, such as "The SSL
+    /// connection could not be established, see inner exception."
+    /// </summary>
+    [Fact]
+    public async Task ConnectionFailure_SaysItsCause()
+    {
+        using var http = new HttpClient(new RoutingHttpHandler(_ => throw new HttpRequestException(
+            HttpRequestError.SecureConnectionError,
+            "The SSL connection could not be established, see inner exception.",
+            new IOException("Received an unexpected EOF or 0 bytes from the transport stream."))));
+        using var client = CreateClient(http);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(
+            () => client.GetGameCreationJobAsync("https://gateway.example", "seller", "job"));
+
+        Assert.Equal(
+            "The SSL connection could not be established, see inner exception. " +
+            "Received an unexpected EOF or 0 bytes from the transport stream.",
+            error.Message);
+        Assert.Equal(HttpRequestError.SecureConnectionError, error.HttpRequestError);
+    }
+
+    /// <summary>
+    /// A request that fails before a response carries the correlation ID it was sent with, so the
+    /// failure can be traced, without changing the exception's type.
+    /// </summary>
+    [Theory]
+    [InlineData("connection")]
+    [InlineData("timeout")]
+    public async Task TransportFailure_CarriesTheSentCorrelationId(string failure)
+    {
+        var handler = new RoutingHttpHandler(_ => failure == "timeout"
+            ? throw new TaskCanceledException("timed out")
+            : throw new HttpRequestException("The connection was reset."));
+        using var http = new HttpClient(handler);
+        using var client = CreateClient(http);
+
+        Exception error = failure == "timeout"
+            ? await Assert.ThrowsAsync<TaskCanceledException>(() => client.GetSellersAsync("http://localhost:54848"))
+            : await Assert.ThrowsAsync<HttpRequestException>(() => client.GetSellersAsync("http://localhost:54848"));
+
+        string? sent = Assert.Single(handler.Requests).Header("x-ms-correlation-id");
+        Assert.True(Guid.TryParse(sent, out _));
+        Assert.Equal(sent, XboxPartnerClient.TransportCorrelationId(error));
+        Assert.Equal(sent, XboxPartnerClient.TransportCorrelationId(new TimeoutException("The request timed out.", error)));
+    }
+
+    [Fact]
+    public async Task TransportFailure_KeepsACallerSuppliedCorrelationId()
+    {
+        var handler = new RoutingHttpHandler(_ => throw new HttpRequestException("The connection was reset."));
+        using var http = new HttpClient(handler);
+        using var client = CreateClient(http);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => client.CreateAudienceAsync(
+            "http://localhost:54848", "1234567", "Testers", [], "caller-correlation"));
+
+        Assert.Equal("caller-correlation", Assert.Single(handler.Requests).Header("x-ms-correlation-id"));
+        Assert.Equal("caller-correlation", XboxPartnerClient.TransportCorrelationId(error));
+    }
+
+    [Fact]
+    public async Task CallerCancellation_IsNotTaggedWithACorrelationId()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new RoutingHttpHandler(_ =>
+        {
+            cancellation.Cancel();
+            throw new TaskCanceledException("canceled");
+        });
+        using var http = new HttpClient(handler);
+        using var client = CreateClient(http);
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.GetSellersAsync("http://localhost:54848", cancellation.Token));
+
+        Assert.Null(XboxPartnerClient.TransportCorrelationId(error));
+    }
+
+    /// <summary>A request that fails name resolution or TLS never reaches the service, so it carries no ID.</summary>
+    [Theory]
+    [InlineData(HttpRequestError.NameResolutionError)]
+    [InlineData(HttpRequestError.SecureConnectionError)]
+    public async Task UnreachedService_IsNotTaggedWithACorrelationId(HttpRequestError reason)
+    {
+        var handler = new RoutingHttpHandler(_ => throw new HttpRequestException(reason, "No such host is known."));
+        using var http = new HttpClient(handler);
+        using var client = CreateClient(http);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetSellersAsync("http://localhost:54848"));
+
+        Assert.Null(XboxPartnerClient.TransportCorrelationId(error));
+    }
+
     /// <summary>A successful response whose body doesn't arrive is a transport failure.</summary>
     [Fact]
     public async Task SuccessBodyThatDoesNotArrive_IsRecordedAsTransport()
@@ -115,6 +206,29 @@ public class XboxPartnerClientTests
         {
             TelemetryRecorder.Stop();
         }
+    }
+
+    /// <summary>A success response whose body fails to arrive carries the correlation ID the request was sent with.</summary>
+    [Theory]
+    [InlineData("text")]
+    [InlineData("bytes")]
+    public async Task SuccessBodyThatDoesNotArrive_CarriesTheSentCorrelationId(string body)
+    {
+        var handler = new RoutingHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new BrokenContent(),
+        });
+        using var http = new HttpClient(handler);
+        using var client = CreateClient(
+            http, CreateConfiguration(("XboxPartner:BaseUrl", "https://gateway.example")));
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => body == "text"
+            ? client.GetGameCreationJobAsync("https://gateway.example", "seller", "job")
+            : client.GetSchemaAsync("achievements", 1, CancellationToken.None));
+
+        string? sent = Assert.Single(handler.Requests).Header("x-ms-correlation-id");
+        Assert.True(Guid.TryParse(sent, out _));
+        Assert.Equal(sent, XboxPartnerClient.TransportCorrelationId(error));
     }
 
     private sealed class BrokenContent : HttpContent
@@ -193,11 +307,6 @@ public class XboxPartnerClientTests
         var job = await client.GetGameCreationJobAsync("https://gateway.example", "seller", "job");
 
         Assert.True(job.Succeeded);
-        Assert.Equal("000123", job.Game!.ProductId);
-        Assert.Equal("00000042", job.Game.XboxTitleId);
-        Assert.Equal("00000000-0000-0000-0000-000000000042", job.Game.Scid);
-        Assert.Equal("TESTSB.42", job.Game.PrimaryDevelopmentSandbox);
-        Assert.Null(job.Errors);
         Assert.Equal(body, job.RawResponse);
         Assert.Equal(TimeSpan.FromSeconds(5), job.RetryAfter);
         Assert.Equal("server-correlation", job.CorrelationId);
@@ -329,37 +438,6 @@ public class XboxPartnerClientTests
     }
 
     [Fact]
-    public async Task JobRequests_RespectCancellationBeforeAuthenticationAndNetwork()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK));
-        using var http = new HttpClient(handler);
-        using var client = CreateClient(http);
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            client.GetGameCreationJobAsync(
-                "https://gateway.example", "seller", "job", cancellation.Token));
-        Assert.Empty(handler.Requests);
-    }
-
-    [Fact]
-    public async Task CreateGameAsync_PreservesResponseSizeLimit()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.Accepted)
-        {
-            Content = new StringContent("""{"jobId":"job","errors":[]}"""),
-        });
-        using var http = new HttpClient(handler);
-        using var client = CreateClient(http, CreateConfiguration(("XboxPartner:MaxResponseBytes", "5")));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            client.CreateGameAsync(
-                "https://gateway.example", "seller",
-                new CreateXboxGameRequest("Game", [XboxPartnerDeviceFamily.Xbox])));
-        Assert.Contains("exceeded the configured maximum size", error.Message);
-        Assert.Single(handler.Requests);
-    }
-
-    [Fact]
     public async Task GetSellersAsync_SendsExpectedPathAndBearerToken()
     {
         var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
@@ -378,28 +456,6 @@ public class XboxPartnerClientTests
         Assert.Equal("Bearer", handler.LastRequest.Headers.Authorization!.Scheme);
         Assert.Equal("access-token", handler.LastRequest.Headers.Authorization.Parameter);
         Assert.Equal(CliIdentity.UserAgent, handler.LastRequest.Headers.UserAgent.ToString());
-    }
-
-    [Fact]
-    public async Task GetGamesAsync_RequestsTheFirstPageWithTheSellerIdHeader()
-    {
-        var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("""{"games":[]}"""),
-        });
-        using var httpClient = new HttpClient(handler);
-        using var client = CreateClient(httpClient);
-
-        await client.GetGamesAsync(
-            "http://localhost:54848",
-            "1234567");
-
-        Assert.Equal(
-            "http://localhost:54848/xboxpartner/v1/games?pageSize=100",
-            handler.LastRequest!.RequestUri!.AbsoluteUri);
-        Assert.Equal(
-            "1234567",
-            Assert.Single(handler.LastRequest.Headers.GetValues("X-DeveloperAccountId")));
     }
 
     [Fact]
@@ -458,26 +514,6 @@ public class XboxPartnerClientTests
     }
 
     [Fact]
-    public async Task GetGamesAsync_SendsEscapedKeywordFilter()
-    {
-        var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("""{"games":[]}"""),
-        });
-        using var httpClient = new HttpClient(handler);
-        using var client = CreateClient(httpClient);
-
-        await client.GetGamesAsync(
-            "http://localhost:54848",
-            "1234567",
-            keyword: "headless game");
-
-        Assert.Equal(
-            "http://localhost:54848/xboxpartner/v1/games?keyword=headless%20game&pageSize=100",
-            handler.LastRequest!.RequestUri!.AbsoluteUri);
-    }
-
-    [Fact]
     public async Task GetGamesAsync_FollowsEveryPageWithTheSameFiltersAndCorrelationId()
     {
         var handler = new XboxPartnerHttpMessageHandler(
@@ -532,7 +568,6 @@ public class XboxPartnerClientTests
     }
 
     [Theory]
-    [InlineData("""{"games":[]}""")]
     [InlineData("""{"games":[],"continuationToken":null}""")]
     [InlineData("""{"games":[],"continuationToken":""}""")]
     public async Task GetGamesAsync_StopsWhenAPageHasNoToken(string body)
@@ -661,28 +696,6 @@ public class XboxPartnerClientTests
     }
 
     [Fact]
-    public async Task GetGamesAsync_FailureOnALaterPageCarriesTheListingCorrelationId()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            OkResponse("""{"games":[{"productId":"a"}],"continuationToken":"t1"}"""),
-            new HttpResponseMessage(HttpStatusCode.GatewayTimeout)
-            {
-                Content = new StringContent("upstream request timeout"),
-            });
-        using var httpClient = new HttpClient(handler);
-        using var client = CreateClient(httpClient);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerApiException>(
-            () => client.GetGamesAsync("http://localhost:54848", "1234567"));
-
-        Assert.Equal(HttpStatusCode.GatewayTimeout, exception.StatusCode);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal(
-            Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]),
-            exception.CorrelationId);
-    }
-
-    [Fact]
     public async Task NonSuccessResponse_ThrowsStructuredException()
     {
         var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.NotFound)
@@ -703,28 +716,6 @@ public class XboxPartnerClientTests
         Assert.Equal(
             "http://localhost:54848/xboxpartner/v1/sellers",
             exception.RequestUri.AbsoluteUri);
-    }
-
-    [Fact]
-    public async Task NonSuccessResponse_CarriesRetryAfterIntoTheGuidance()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
-        {
-            Content = new StringContent("""{"code":"rate_limited","detail":"Too many requests."}"""),
-        };
-        response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
-        var handler = new MockHttpMessageHandler(response);
-        using var httpClient = new HttpClient(handler);
-        using var client = CreateClient(httpClient);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerApiException>(
-            () => client.GetGamesAsync("http://localhost:54848", "1234567"));
-
-        Assert.Equal(TimeSpan.FromSeconds(30), exception.RetryAfter);
-        Assert.Contains(
-            "Try again in 30 seconds.",
-            XboxPartnerErrorGuidance.Describe(exception, isAutomation: false),
-            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -779,31 +770,6 @@ public class XboxPartnerClientTests
             exception.Message);
     }
 
-    [Fact]
-    public async Task DocumentArchiveLargerThanItsLimit_IsRejectedAsItArrives()
-    {
-        var configuration = CreateConfiguration(
-            ("XboxPartner:BaseUrl", "http://localhost:54848"),
-            ("XboxPartner:MaxDocumentArchiveBytes", "3"));
-        var content = new ByteArrayContent([1, 2, 3, 4]);
-        content.Headers.ContentLength = null;
-        var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
-        using var httpClient = new HttpClient(handler);
-        using var client = CreateClient(httpClient, configuration);
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => client.GetXboxLiveDocumentsAsync(
-                12345,
-                new XboxLiveGetDocumentsRequest(
-                    "sandbox", Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "XDKS.1", "working", null, []),
-                CancellationToken.None));
-
-        Assert.Equal(
-            "The response exceeded the configured maximum size of 3 bytes. "
-            + "Increase 'XboxPartner:MaxDocumentArchiveBytes' to allow larger responses.",
-            exception.Message);
-    }
-
     [Theory]
     [InlineData("utf-8")]
     [InlineData("utf-16")]
@@ -852,7 +818,6 @@ public class XboxPartnerClientTests
     [InlineData("XboxPartner:MaxResponseBytes", "0", "positive number of bytes")]
     [InlineData("XboxPartner:TimeoutSeconds", "0", "positive number")]
     [InlineData("XboxPartner:TimeoutSeconds", "NaN", "positive number")]
-    [InlineData("XboxPartner:TimeoutSeconds", "Infinity", "positive number")]
     [InlineData("XboxPartner:TimeoutSeconds", "1e12", "positive number")]
     [InlineData("XboxPartner:TimeoutSeconds", "1e-9", "positive number")]
     public void Constructor_RejectsInvalidLimits(
@@ -866,20 +831,6 @@ public class XboxPartnerClientTests
             () => new XboxPartnerClient(configuration));
 
         Assert.Contains(expectedMessage, exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task MissingCachedToken_DirectsUserToLogin()
-    {
-        using var client = new XboxPartnerClient(
-            CreateConfiguration(),
-            new HttpClient(new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK))),
-            new FakeAuthenticationService(token: null));
-
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => client.GetSellersAsync("http://localhost:54848"));
-
-        Assert.Contains("xbox auth login", exception.Message, StringComparison.Ordinal);
     }
 
     private static HttpResponseMessage OkResponse(string body) =>

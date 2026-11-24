@@ -4,8 +4,6 @@
 using System.CommandLine;
 using System.Net;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Identity.Client;
-using Moq;
 using XboxDevCLI.Commands;
 using XboxDevCLI.Services;
 using Xunit;
@@ -34,10 +32,21 @@ public class CtrlCConsistencyTests
         { new[] { "xbl", "achievement-image", "get", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--asset-id", "11111111-2222-3333-4444-555555555555" } },
         { new[] { "package", "list", "--store-id", "9N0000000000" } },
         { new[] { "playtest", "list", "--store-id", "9N0000000000" } },
+        { new[] { "store-listing", "get", "--store-id", "9N0000000000", "--language", "en-us" } },
         { new[] { "seller", "list" } },
         { new[] { "xbl", "config", "list", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } },
         { new[] { "xbl", "config", "download", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1", "--view", "draft", "--dest", "{dir}" } },
         { new[] { "xbl", "achievement-image", "download", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--all", "--dest", "{dir}" } },
+        { new[] { "xbl", "binding", "get", "--store-id", "9N0000000000" } },
+        { new[] { "xbl", "global-storage", "get", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1" } },
+        { new[] { "xbl", "global-storage", "list", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1" } },
+        { new[] { "xbl", "global-storage", "download", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1", "--path", "news/today.json", "--file-type", "json", "--dest", "{dir}" } },
+        { new[] { "xbl", "web-service", "list" } },
+        { new[] { "xbl", "web-service", "get", "11111111-2222-3333-4444-555555555555" } },
+        { new[] { "xbl", "relying-party", "list" } },
+        { new[] { "xbl", "relying-party", "get", "rp://api.nodpublishers.com/" } },
+        { new[] { "xbl", "business-partner", "list" } },
+        { new[] { "xbl", "business-partner", "get", "11111111-2222-3333-4444-555555555555" } },
     };
 
     /// <summary>
@@ -75,6 +84,47 @@ public class CtrlCConsistencyTests
             new[] { "xbl", "achievement-image", "upload", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--file", "{png}", "-y" },
             2, "so no image was registered."
         },
+        {
+            new[] { "xbl", "binding", "create", "--store-id", "9N0000000000", "--primary-title-id", "1234ABCD", "-y" },
+            1, "so game 9N0000000000 wasn't bound to 1234ABCD."
+        },
+        {
+            new[] { "xbl", "global-storage", "upload", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1", "--file", "{file}", "--path", "news/today.json", "--file-type", "json" },
+            1, "so 'news/today.json' wasn't uploaded."
+        },
+        {
+            new[] { "xbl", "global-storage", "delete", "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--sandbox-id", "XDKS.1", "--path", "news/today.json", "--file-type", "json", "-y" },
+            1, "so 'news/today.json' wasn't deleted."
+        },
+        { new[] { "xbl", "web-service", "create", "--name", "Nod Arena matchmaker" }, 1, "so no web service was created." },
+        {
+            new[] { "xbl", "web-service", "update", "11111111-2222-3333-4444-555555555555", "--name", "Nod Arena matchmaker EU" },
+            1, "so web service 11111111-2222-3333-4444-555555555555 wasn't changed."
+        },
+        {
+            new[] { "xbl", "web-service", "delete", "11111111-2222-3333-4444-555555555555", "-y" },
+            1, "so web service 11111111-2222-3333-4444-555555555555 wasn't deleted."
+        },
+        {
+            new[] { "xbl", "web-service", "certificate", "create", "--web-service-id", "11111111-2222-3333-4444-555555555555", "--dest", "{dir}.pfx", "--password-file", "{file}", "-y" },
+            1, "so no certificate was created."
+        },
+        {
+            new[] { "xbl", "relying-party", "create", "api.nodpublishers.com", "--certificate-file", "{cer}", "-y" },
+            1, "so no relying party was created."
+        },
+        {
+            new[] { "xbl", "relying-party", "save", "rp://api.nodpublishers.com/", "--lifetime-hours", "4" },
+            1, "so relying party rp://api.nodpublishers.com/ wasn't changed."
+        },
+        {
+            new[] { "xbl", "business-partner", "create", "--name", "Nod Arena services", "-y" },
+            1, "so no business partner was created."
+        },
+        {
+            new[] { "xbl", "business-partner", "save", "11111111-2222-3333-4444-555555555555", "--name", "Nod Arena services" },
+            1, "so business partner 11111111-2222-3333-4444-555555555555 wasn't renamed."
+        },
     };
 
     [Theory]
@@ -86,18 +136,18 @@ public class CtrlCConsistencyTests
         {
             arguments = await PrepareAsync(arguments, directory);
             using var cancellation = new CancellationTokenSource();
-            var handler = new CountingHandler(() =>
+            var handler = new RoutingHttpHandler(_ =>
             {
                 cancellation.Cancel();
                 throw new OperationCanceledException(cancellation.Token);
             });
 
-            var result = await InvokeAsync(handler, CreateAuth(), arguments, cancellation.Token);
+            var result = await InvokeAsync(handler, arguments, cancellation.Token);
 
             Assert.Equal(130, result.ExitCode);
             Assert.Empty(result.Stdout);
             Assert.Empty(TestEnvironment.WithoutEndpointWarnings(result.Stderr));
-            Assert.Equal(1, handler.Requests);
+            Assert.Single(handler.Requests);
         }
         finally
         {
@@ -119,13 +169,13 @@ public class CtrlCConsistencyTests
                     .. action == "save" ? new[] { "--file", "{file}" } : [], "-y"],
                 directory);
             using var cancellation = new CancellationTokenSource();
-            var handler = new CountingHandler(() =>
+            var handler = new RoutingHttpHandler(_ =>
             {
                 cancellation.Cancel();
                 throw new OperationCanceledException(cancellation.Token);
             });
 
-            var result = await InvokeAsync(handler, CreateAuth(), arguments, cancellation.Token);
+            var result = await InvokeAsync(handler, arguments, cancellation.Token);
 
             Assert.Equal(3, result.ExitCode);
             Assert.Empty(result.Stdout);
@@ -146,22 +196,21 @@ public class CtrlCConsistencyTests
         {
             arguments = await PrepareAsync(arguments, directory);
             using var cancellation = new CancellationTokenSource();
-            var auth = CreateAuth();
             int signIns = 0;
-            auth.Setup(service => service.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-                .Returns(() =>
-                {
-                    if (++signIns < canceledSignIn)
-                    {
-                        return Task.FromResult<AuthenticationResult?>(Token());
-                    }
-
-                    cancellation.Cancel();
-                    return Task.FromCanceled<AuthenticationResult?>(cancellation.Token);
-                });
-            var handler = new CountingHandler(request => new HttpResponseMessage(HttpStatusCode.OK)
+            var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken())
             {
-                Content = new StringContent(request.RequestUri!.AbsolutePath switch
+                OnTokenRequest = _ =>
+                {
+                    if (++signIns >= canceledSignIn)
+                    {
+                        cancellation.Cancel();
+                        throw new OperationCanceledException(cancellation.Token);
+                    }
+                },
+            };
+            var handler = new RoutingHttpHandler(request => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.Path switch
                 {
                     var path when path.EndsWith("/readiness", StringComparison.Ordinal) => """{"ready":true,"checks":[]}""",
                     var path when path.EndsWith("/upload/initialize", StringComparison.Ordinal) =>
@@ -170,12 +219,12 @@ public class CtrlCConsistencyTests
                 }),
             });
 
-            var result = await InvokeAsync(handler, auth, arguments, cancellation.Token);
+            var result = await InvokeAsync(handler, arguments, cancellation.Token, auth);
 
             Assert.Equal(1, result.ExitCode);
             Assert.Empty(result.Stdout);
-            Assert.Contains($"Canceled before the {(arguments[2] == "upload" ? "registration " : "")}request was sent, {message}", result.Stderr);
-            Assert.Equal(canceledSignIn - 1, handler.Requests);
+            Assert.Contains($"Canceled before the {(arguments[1] == "achievement-image" ? "registration " : "")}request was sent, {message}", result.Stderr);
+            Assert.Equal(canceledSignIn - 1, handler.Requests.Count);
         }
         finally
         {
@@ -186,24 +235,28 @@ public class CtrlCConsistencyTests
     /// <summary>Writes the files the arguments name into <paramref name="directory"/>, and fills them in.</summary>
     private static async Task<string[]> PrepareAsync(string[] arguments, string directory)
     {
-        string file = Path.Combine(directory, "nsal.xml");
+        string file = Path.Combine(directory, "presence.xml");
         string png = Path.Combine(directory, "badge.png");
+        string cer = Path.Combine(directory, "rp.cer");
         await File.WriteAllTextAsync(file, "<nsal />");
         await File.WriteAllBytesAsync(png, AchievementImageCommandTests.CreatePngHeader(1920, 1080));
+        await File.WriteAllTextAsync(cer, XboxLiveAccountCommandTests.CertificatePem);
         return [.. arguments.Select(argument => argument
             .Replace("{file}", file)
             .Replace("{png}", png)
+            .Replace("{cer}", cer)
             .Replace("{dir}", Path.Combine(directory, "out")))];
     }
 
     private static async Task<(int ExitCode, string Stdout, string Stderr)> InvokeAsync(
         HttpMessageHandler handler,
-        Mock<AuthenticationService> auth,
         string[] arguments,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        AuthenticationService? auth = null)
     {
+        auth ??= new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         using var httpClient = new HttpClient(handler);
-        XboxPartnerClient CreateClient(IConfiguration configuration) => new(configuration, httpClient, auth.Object);
+        XboxPartnerClient CreateClient(IConfiguration configuration) => new(configuration, httpClient, auth);
 
         var root = Program.BuildRootCommand(
             sellerCommandFactory: () => SellerCommandFactory.Create(CreateClient),
@@ -223,7 +276,7 @@ public class CtrlCConsistencyTests
             Environment.SetEnvironmentVariable("XBOX_XBOXPARTNER__BASEURL", "https://gateway.example");
             Environment.SetEnvironmentVariable("XBOX_SELLER_ID", "1234567");
             Program.XboxPartnerClientFactory = CreateClient;
-            Program.AchievementImageUploadClientFactory = () => new HttpClient(new CountingHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)));
+            Program.AchievementImageUploadClientFactory = () => new HttpClient(new RoutingHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.Created)));
             Console.SetOut(stdout);
             Console.SetError(stderr);
 
@@ -245,49 +298,6 @@ public class CtrlCConsistencyTests
             }
 
             TestEnvironment.Reset();
-        }
-    }
-
-    private static Mock<AuthenticationService> CreateAuth()
-    {
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(
-            new Dictionary<string, string?>
-            {
-                ["AzureAd:ClientId"] = "test-client",
-                ["AzureAd:TenantId"] = "test-tenant",
-                ["AzureAd:Scopes"] = "api://test/.default",
-            }).Build();
-        var account = Mock.Of<IAccount>(
-            account => account.HomeAccountId == new AccountId("id", "user", "test-tenant"));
-        var auth = new Mock<AuthenticationService>(configuration);
-        auth.Setup(service => service.GetCachedAccountAsync(It.IsAny<CancellationToken>())).ReturnsAsync(account);
-        auth.Setup(service => service.AcquireTokenSilentAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Token());
-        return auth;
-    }
-
-    private static AuthenticationResult Token()
-    {
-        var account = Mock.Of<IAccount>(
-            account => account.HomeAccountId == new AccountId("id", "user", "test-tenant"));
-        return new AuthenticationResult(
-            "access-token", false, "user", DateTimeOffset.UtcNow.AddHours(1),
-            DateTimeOffset.UtcNow.AddHours(1), "test-tenant", account,
-            "id-token", ["api://test/.default"], Guid.NewGuid());
-    }
-
-    private sealed class CountingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
-    {
-        public CountingHandler(Func<HttpResponseMessage> respond)
-            : this(_ => respond())
-        {
-        }
-
-        public int Requests { get; private set; }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            Requests++;
-            return Task.FromResult(respond(request));
         }
     }
 }

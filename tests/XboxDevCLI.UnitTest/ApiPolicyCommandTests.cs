@@ -11,10 +11,10 @@ using Xunit;
 namespace XboxDevCLI.UnitTest;
 
 /// <summary>
-/// Coverage for the <c>playfab title api-policy</c> command group: command/option structure,
-/// the <c>show</c> action (default and explicit <c>--policy-name</c>), the <c>set</c> action's
-/// statement-source mutual exclusion, file handling and JSON validation, the request body actually
-/// serialized (URI path + JSON), success output shaping, and the API-error path.
+/// Coverage for the <c>playfab api-policy</c> command group: command/option structure, the
+/// <c>get</c> action's request, the <c>set</c> action's statement-source mutual exclusion, file
+/// handling and JSON validation, the request body actually serialized (URI path + JSON), and the
+/// <c>--overwrite</c> confirmation.
 /// </summary>
 public class ApiPolicyCommandTests
 {
@@ -38,22 +38,12 @@ public class ApiPolicyCommandTests
     }
 
     [Fact]
-    public void Show_HasOptionalPolicyNameOption()
-    {
-        var apiPolicy = ApiPolicyCommandFactory.Create();
-        var show = apiPolicy.Subcommands.First(c => c.Name == "get");
-
-        var policyName = Assert.Single(show.Options, o => o.Name == "--policy-name");
-        Assert.False(policyName.Required);
-    }
-
-    [Fact]
     public void Set_HasExpectedOptions()
     {
         var apiPolicy = ApiPolicyCommandFactory.Create();
         var set = apiPolicy.Subcommands.First(c => c.Name == "set");
 
-        foreach (var name in new[] { "--policy-name", "--statements", "--statements-file", "--policy-version", "--overwrite" })
+        foreach (var name in new[] { "--statements", "--statements-file", "--policy-version", "--overwrite" })
         {
             Assert.Contains(set.Options, o => o.Name == name);
         }
@@ -63,21 +53,6 @@ public class ApiPolicyCommandTests
         Assert.True(set.Options.First(o => o.Name == "--policy-version").Required);
         Assert.False(set.Options.First(o => o.Name == "--statements").Required);
         Assert.False(set.Options.First(o => o.Name == "--statements-file").Required);
-    }
-
-    #endregion
-
-    #region ResolvePolicyName
-
-    [Theory]
-    [InlineData(null, "ApiPolicy")]
-    [InlineData("", "ApiPolicy")]
-    [InlineData("   ", "ApiPolicy")]
-    [InlineData("  Custom  ", "Custom")]
-    [InlineData("ApiPolicy", "ApiPolicy")]
-    public void ResolvePolicyName_DefaultsAndTrims(string? input, string expected)
-    {
-        Assert.Equal(expected, ApiPolicyCommandFactory.ResolvePolicyName(input));
     }
 
     #endregion
@@ -94,16 +69,6 @@ public class ApiPolicyCommandTests
         Assert.Equal("*", statement.Action);
         Assert.Equal(EffectType.Allow, statement.Effect);
         Assert.Equal("allow all", statement.Comment);
-    }
-
-    [Fact]
-    public void TryParseStatements_CaseInsensitiveProperties()
-    {
-        var lower = """[{"resource":"pfrn:api--*","effect":"Deny"}]""";
-        Assert.True(ApiPolicyCommandFactory.TryParseStatements(lower, out var statements, out _));
-        var statement = Assert.Single(statements!);
-        Assert.Equal("pfrn:api--*", statement.Resource);
-        Assert.Equal(EffectType.Deny, statement.Effect);
     }
 
     [Theory]
@@ -161,23 +126,10 @@ public class ApiPolicyCommandTests
         Assert.False(
             ApiPolicyCommandFactory.TryParseStatements(TypoedCondition, out var statements, out var error));
         Assert.Null(statements);
-        Assert.Contains("ApiCondition", error);
+        Assert.Contains("'ApiCondition'", error);
         // The message must name the valid fields rather than the generated .NET type.
         Assert.Contains("ApiConditions", error);
         Assert.DoesNotContain("XboxDevCLI.PlayFab.Generated", error);
-    }
-
-    [Fact]
-    public void TryParseStatements_UnknownField_IsRejected()
-    {
-        const string UnknownField = """
-            [{"Resource":"pfrn:api--*","Action":"*","Effect":"Allow","Principal":"*","Nope":true}]
-            """;
-
-        Assert.False(
-            ApiPolicyCommandFactory.TryParseStatements(UnknownField, out var statements, out var error));
-        Assert.Null(statements);
-        Assert.Contains("Nope", error);
     }
 
     [Fact]
@@ -208,7 +160,7 @@ public class ApiPolicyCommandTests
         var stderr = new StringWriter();
 
         var exit = await ApiPolicyCommandFactory.RunShowAsync(
-            client, null, OutputOptions.Json, stdout, stderr,
+            client, OutputOptions.Json, stdout, stderr,
             CancellationToken.None);
 
         Assert.Equal(0, exit);
@@ -217,74 +169,6 @@ public class ApiPolicyCommandTests
         Assert.Equal("ApiPolicy", doc.RootElement.GetProperty("PolicyName").GetString());
         Assert.Contains("PolicyVersion", stdout.ToString());
         Assert.Equal(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunShowAsync_ExplicitPolicyName_IsTrimmedAndSent()
-    {
-        var handler = new MockHttpMessageHandler(Ok(OkEnvelope));
-        using var client = PlayFabTestClient.Create(handler);
-
-        var exit = await ApiPolicyCommandFactory.RunShowAsync(
-            client, "  Custom  ", OutputOptions.Json, new StringWriter(), new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        Assert.Equal("Custom", doc.RootElement.GetProperty("PolicyName").GetString());
-    }
-
-    [Fact]
-    public async Task RunShowAsync_JsonCompact_EmitsSingleLine()
-    {
-        var handler = new MockHttpMessageHandler(Ok(OkEnvelope));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await ApiPolicyCommandFactory.RunShowAsync(
-            client, null, OutputOptions.JsonCompact, stdout, new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        var output = stdout.ToString().TrimEnd();
-        Assert.DoesNotContain("\n", output);
-        Assert.Contains("PolicyVersion", output);
-    }
-
-    [Fact]
-    public async Task RunShowAsync_DataOnly_StripsEnvelope()
-    {
-        var handler = new MockHttpMessageHandler(Ok(OkEnvelope));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await ApiPolicyCommandFactory.RunShowAsync(
-            client, null, new OutputOptions("json", DataOnly: true), stdout, new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        var output = stdout.ToString();
-        Assert.Contains("PolicyVersion", output);
-        Assert.DoesNotContain("status", output);
-    }
-
-    [Fact]
-    public async Task RunShowAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad policy"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await ApiPolicyCommandFactory.RunShowAsync(
-            client, null, OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
     }
 
     #endregion
@@ -298,7 +182,7 @@ public class ApiPolicyCommandTests
         using var client = PlayFabTestClient.Create(handler);
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, SampleStatements, null, policyVersion: 7, overwrite: true,
+            client, SampleStatements, null, policyVersion: 7, overwrite: true,
             OutputOptions.Json, new StringWriter(), new StringWriter(), confirmed: true, cancellationToken: CancellationToken.None);
 
         Assert.Equal(0, exit);
@@ -317,22 +201,6 @@ public class ApiPolicyCommandTests
     }
 
     [Fact]
-    public async Task RunSetAsync_DefaultsOverwriteToAppend()
-    {
-        var handler = new MockHttpMessageHandler(Ok(OkEnvelope));
-        using var client = PlayFabTestClient.Create(handler);
-
-        var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, "Custom", SampleStatements, null, policyVersion: 0, overwrite: false,
-            OutputOptions.Json, new StringWriter(), new StringWriter(), cancellationToken: CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        Assert.False(doc.RootElement.GetProperty("OverwritePolicy").GetBoolean());
-        Assert.Equal("Custom", doc.RootElement.GetProperty("PolicyName").GetString());
-    }
-
-    [Fact]
     public async Task RunSetAsync_StatementsFromFile_ReadsAndSends()
     {
         var tempDir = Directory.CreateTempSubdirectory().FullName;
@@ -345,7 +213,7 @@ public class ApiPolicyCommandTests
             using var client = PlayFabTestClient.Create(handler);
 
             var exit = await ApiPolicyCommandFactory.RunSetAsync(
-                client, null, null, path, policyVersion: 2, overwrite: false,
+                client, null, path, policyVersion: 2, overwrite: false,
                 OutputOptions.Json, new StringWriter(), new StringWriter(), cancellationToken: CancellationToken.None);
 
             Assert.Equal(0, exit);
@@ -367,7 +235,7 @@ public class ApiPolicyCommandTests
         var stderr = new StringWriter();
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, SampleStatements, "some-file.json", policyVersion: 1, overwrite: false,
+            client, SampleStatements, "some-file.json", policyVersion: 1, overwrite: false,
             OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
         Assert.Equal(1, exit);
@@ -383,7 +251,7 @@ public class ApiPolicyCommandTests
         var stderr = new StringWriter();
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, null, null, policyVersion: 1, overwrite: false,
+            client, null, null, policyVersion: 1, overwrite: false,
             OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
         Assert.Equal(1, exit);
@@ -402,7 +270,7 @@ public class ApiPolicyCommandTests
         // is created (and therefore none is leaked) just to name a missing file.
         var missing = Path.Combine(Path.GetTempPath(), $"xdc-missing-{Guid.NewGuid():N}", "does-not-exist.json");
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, null, missing, policyVersion: 1, overwrite: false,
+            client, null, missing, policyVersion: 1, overwrite: false,
             OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
         Assert.Equal(1, exit);
@@ -418,31 +286,12 @@ public class ApiPolicyCommandTests
         var stderr = new StringWriter();
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, """{"not":"an array"}""", null, policyVersion: 1, overwrite: false,
+            client, """{"not":"an array"}""", null, policyVersion: 1, overwrite: false,
             OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
         Assert.Equal(1, exit);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("expected a JSON array", stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunSetAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"stale version"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, SampleStatements, null, policyVersion: 1, overwrite: false,
-            OutputOptions.Json, stdout, stderr, cancellationToken: CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
     }
 
     [Fact]
@@ -456,11 +305,13 @@ public class ApiPolicyCommandTests
         using var client = PlayFabTestClient.Create(handler);
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, SampleStatements, null, policyVersion: 1, overwrite: false,
+            client, SampleStatements, null, policyVersion: 1, overwrite: false,
             OutputOptions.Json, new StringWriter(), new StringWriter(), cancellationToken: CancellationToken.None);
 
         Assert.Equal(0, exit);
         Assert.Contains("/Admin/UpdatePolicy", handler.LastRequestUri);
+        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.False(doc.RootElement.GetProperty("OverwritePolicy").GetBoolean());
     }
 
     [Fact]
@@ -474,7 +325,7 @@ public class ApiPolicyCommandTests
         var stderr = new StringWriter();
 
         var exit = await ApiPolicyCommandFactory.RunSetAsync(
-            client, null, SampleStatements, null, policyVersion: 1, overwrite: true,
+            client, SampleStatements, null, policyVersion: 1, overwrite: true,
             OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
         Assert.Equal(1, exit);
@@ -500,7 +351,7 @@ public class ApiPolicyCommandTests
             var stderr = new StringWriter();
 
             var exit = await ApiPolicyCommandFactory.RunSetAsync(
-                client, null, null, path, policyVersion: 1, overwrite: false,
+                client, null, path, policyVersion: 1, overwrite: false,
                 OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
 
             Assert.Equal(1, exit);

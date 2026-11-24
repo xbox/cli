@@ -19,7 +19,7 @@ internal static class AchievementImageCommandFactory
     [
         new("ASSET ID", JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveAchievementImage.AssetId)), 38),
         new("CDN FILENAME", JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveAchievementImage.CdnUrl)), 36,
-            Transform: url => AchievementImageCdnFileName.FromUrl(url) ?? "-"),
+            Transform: url => AchievementImageCdnFileName.FromUrl(url.GetString()) ?? "-"),
         new("WIDTH", JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveAchievementImage.WidthInPixels)), 8),
         new("HEIGHT", JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveAchievementImage.HeightInPixels)), 8),
         new("IMAGE TYPE", JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveAchievementImage.ImageType)), 12),
@@ -220,9 +220,8 @@ internal static class AchievementImageCommandFactory
                     configuration,
                     authenticationService: Program.GetAuthentication(parseResult))
                 : Program.XboxPartnerClientFactory(configuration);
-            string baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
-            sellerId = await sellerOption.GetSellerIdAsync(
-                parseResult, configuration, client, baseUrl, cancellationToken);
+            _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+            sellerId = sellerOption.GetSellerId(parseResult);
             Guid scid = parseResult.GetValue(scidOption);
             string operation = action switch
             {
@@ -260,6 +259,7 @@ internal static class AchievementImageCommandFactory
                 ? XboxPartnerCommandErrorFormatter.Format(
                     api, output.IsCompact, sensitiveValues: ex.SensitiveValues)
                 : $"Request failed: {XboxPartnerCommandErrorFormatter.Redact(ex.Message, ex.SensitiveValues)}";
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
             Console.Error.WriteLine(originalError);
             Console.Error.WriteLine();
             Console.Error.WriteLine("Upload outcome unknown. The service did not confirm image registration.");
@@ -303,6 +303,7 @@ internal static class AchievementImageCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
             Console.Error.WriteLine($"Request failed: {ex.Message}");
             return 1;
         }

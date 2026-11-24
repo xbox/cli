@@ -3,7 +3,6 @@
 
 using System.Globalization;
 using System.Net;
-using System.Text.Json;
 
 namespace XboxDevCLI.Services;
 
@@ -119,33 +118,8 @@ internal static class XboxPartnerErrorGuidance
         requestUri.AbsolutePath.TrimEnd('/').EndsWith(
             "/xboxpartner/v1/sellers", StringComparison.OrdinalIgnoreCase);
 
-    private static string? TryReadProblemDetail(string responseBody)
-    {
-        if (string.IsNullOrWhiteSpace(responseBody))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
-            foreach (var propertyName in new[] { "detail", "message", "title" })
-            {
-                if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty(propertyName, out var value)
-                    && value.ValueKind == JsonValueKind.String
-                    && !string.IsNullOrWhiteSpace(value.GetString()))
-                {
-                    return value.GetString();
-                }
-            }
-        }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
-        {
-            return null;
-        }
-
-        return null;
-    }
+    private static string? TryReadProblemDetail(string responseBody) =>
+        new[] { "detail", "message", "title" }
+            .Select(property => Commands.TestAccountCommandFactory.ReadProblemString(responseBody, property))
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 }

@@ -14,7 +14,9 @@ xbox --playfab-title-id ABC123 playfab file <command>
 Every file command requires `--entity-id` and `--entity-type`. For a player, pass their
 title player account ID with `--entity-type title_player_account`, not their master player
 account ID; [`playfab player account get`](player.md) returns it as
-`UserInfo.TitleInfo.TitlePlayerAccount.Id`.
+`UserInfo.TitleInfo.TitlePlayerAccount.Id`. PlayFab runs these commands as the title, which can
+read and change any player's files; see
+[How PlayFab authentication works](../../authentication.md#how-playfab-authentication-works).
 
 | Command | PlayFab API path | Description |
 | --- | --- | --- |
@@ -37,10 +39,8 @@ nothing to stdout, and report what they did on stderr:
 | `playfab file download` | `Downloaded '<name>' to '<path>' (<bytes> bytes).` |
 | `playfab file delete` | `Deleted file: '<name>'`, or `Deleted files: '<name>', '<name>'` for several |
 
-These messages might change between releases, so scripts should check the exit code: `0`
-when the operation succeeded, and nonzero when it failed, with the error on stderr. These
-three commands don't accept `--output table`, and `--data-only` doesn't change what they
-write.
+These messages might change between releases. These three commands don't accept
+`--output table`, and `--data-only` doesn't change what they write.
 
 ## `playfab file list`
 

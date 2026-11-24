@@ -151,7 +151,6 @@ public class HelpCommandTests
             $"{Environment.NewLine}{Environment.NewLine}  --client-id",
             result.Stdout,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("--config-env", result.Stdout, StringComparison.Ordinal);
         Assert.Contains(
             $"{Environment.NewLine}{Environment.NewLine}  --verbose",
             result.Stdout,
@@ -431,6 +430,7 @@ public class HelpCommandTests
             Available commands:
               audience
               auth
+              completion
               context
               feedback
               game
@@ -442,6 +442,7 @@ public class HelpCommandTests
               playtest
               sandbox
               seller
+              store-listing
               test-account
               upgrade
               xbl
@@ -554,6 +555,65 @@ public class HelpCommandTests
         Assert.Equal(0, result.ExitCode);
         Assert.False(string.IsNullOrWhiteSpace(result.Stdout));
         Assert.Equal(string.Empty, result.Stderr);
+    }
+
+    [Fact]
+    public async Task ExtraSegmentAfterLeaf_PrintsOnlyTheContextualError()
+    {
+        var result = await InvokeAsync(["auth", "login", "seller", "list"]);
+        var helpCommand = await InvokeAsync(["help", "auth", "login", "seller", "list"]);
+
+        var expected =
+            $"""
+            unknown command "seller" for "{CliIdentity.CommandName} auth login"
+
+            Usage:  {CliIdentity.CommandName} auth login [flags]
+            """ + Environment.NewLine;
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Equal(NormalizeNewLines(expected), NormalizeNewLines(result.Stderr));
+        Assert.Equal(helpCommand.Stderr, result.Stderr);
+    }
+
+    [Fact]
+    public async Task ExtraSegmentAndUnknownOptionAfterLeaf_WritesEachErrorOnce()
+    {
+        var result = await InvokeAsync(["auth", "login", "seller", "list", "--nope"]);
+
+        var expected =
+            $"""
+            Unrecognized command or argument 'seller'.
+            Unrecognized command or argument 'list'.
+            Unrecognized command or argument '--nope'.
+
+            Usage:  {CliIdentity.CommandName} auth login [flags]
+            Run '{CliIdentity.CommandName} help auth login' for more.
+            """ + Environment.NewLine;
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Equal(NormalizeNewLines(expected), NormalizeNewLines(result.Stderr));
+    }
+
+    [Fact]
+    public async Task ParseErrorOnLeaf_WritesEachErrorOnceThenOnlyTheUsage()
+    {
+        var result = await InvokeAsync(["playfab", "file", "list", "extra"]);
+
+        var expected =
+            $"""
+            Unrecognized command or argument 'extra'.
+            Option '--entity-id' is required.
+            Option '--entity-type' is required.
+
+            Usage:  {CliIdentity.CommandName} playfab file list --entity-id <entity-id> --entity-type <entity-type> [flags]
+            Run '{CliIdentity.CommandName} help playfab file list' for more.
+            """ + Environment.NewLine;
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Equal(NormalizeNewLines(expected), NormalizeNewLines(result.Stderr));
     }
 
     [Fact]
@@ -915,7 +975,7 @@ public class HelpCommandTests
 
         Assert.Equal(0, configurations.ExitCode);
         Assert.Contains("XBOX_TITLE_ID", normalizedConfigurations, StringComparison.Ordinal);
-        Assert.Contains("working and published", normalizedConfigurations, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("whether each draft has changes", normalizedConfigurations, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("TABLE OUTPUT", normalizedConfigurations, StringComparison.Ordinal);
 
         Assert.Equal(0, status.ExitCode);
@@ -1362,6 +1422,46 @@ public class HelpCommandTests
         Assert.NotEqual(-1, helpIndex);
         Assert.True(helpIndex > supportIndex);
         Assert.DoesNotContain("ADDITIONAL COMMANDS", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("playtest list", "Pass exactly one of --store-id or --xbox-title-id.", "xbox playtest list [flags]")]
+    [InlineData("completion nope", "Argument 'nope' not recognized.", "xbox completion <shell> [flags]")]
+    public async Task UsageError_WritesTheErrorAndUsageOnlyToStderr(string command, string error, string usage)
+    {
+        var result = await InvokeAsync(command.Split(' '));
+        var path = string.Join(' ', command.Split(' ').TakeWhile(segment => segment != "nope"));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.StartsWith(error, result.Stderr, StringComparison.Ordinal);
+        Assert.Contains($"{Environment.NewLine}Usage:  {usage}{Environment.NewLine}", result.Stderr, StringComparison.Ordinal);
+        Assert.EndsWith($"Run 'xbox help {path}' for more.{Environment.NewLine}", result.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("DESCRIPTION", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UsageError_SuggestsTheOptionAMistypedOneWasProbablyMeantToBe()
+    {
+        var result = await InvokeAsync(["playtest", "list", "--stor-id", "9N0000000000"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Contains("Did you mean --store-id?", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("playtest list --help")]
+    [InlineData("help playtest list")]
+    [InlineData("playtest")]
+    [InlineData("")]
+    public async Task RequestedHelp_GoesToStdoutEvenWhenRequiredInputIsMissing(string command)
+    {
+        var result = await InvokeAsync(command.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("USAGE", result.Stdout, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, result.Stderr);
     }
 
     [Fact]

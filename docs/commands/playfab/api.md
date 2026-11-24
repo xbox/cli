@@ -41,15 +41,16 @@ without validating it.
 xbox --playfab-title-id ABC123 playfab api /Catalog/GetCatalogConfig
 xbox --playfab-title-id ABC123 playfab api /Match/ListMatchmakingQueues --data-only --output json-compact
 xbox --playfab-title-id ABC123 playfab api /Catalog/SearchItems --body-file search.json
-xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData --body '{"Keys":["MyKey"]}' --data-only --output json-compact
 ```
 
 ### Read the request body from stdin
 
 ```bash
-printf '%s' '{"Keys":["MyKey"]}' |
-  xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData --body-file -
+echo '{"Keys":["MyKey"]}' | xbox --playfab-title-id ABC123 playfab api /Admin/GetTitleData --body-file - --data-only --output json-compact
 ```
+
+This works in every shell. Use it in place of `--body` in
+[Windows PowerShell 5.1](../../playfab-api.md#windows-powershell-51).
 
 Stdin supplies one request body, read to the end of input, not one request per line.
 With `--body-file -`, `Delete*` and `Shutdown*` operations need `--confirm` even in a

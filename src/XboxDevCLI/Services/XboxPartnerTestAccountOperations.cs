@@ -19,7 +19,6 @@ internal sealed partial class XboxPartnerClient
         Action<int>? pageRead = null)
     {
         ArgumentNullException.ThrowIfNull(filter);
-        ValidateSellerId(sellerId);
         (string Name, string? Value)[] filters =
         [
             ("sellerId", Invariant(sellerId)),
@@ -27,9 +26,11 @@ internal sealed partial class XboxPartnerClient
             ("createdBy", Invariant(filter.CreatedBy)),
             ("emailPrefix", filter.EmailPrefix),
             ("keyword", filter.Keyword),
+            ("xuid", filter.Xuid),
             ("state", filter.State),
             ("top", Invariant(filter.Top)),
             ("includeSandboxes", filter.IncludeSandboxes ? "true" : null),
+            ("expired", filter.Expired ? "true" : null),
         ];
         IReadOnlyList<string> batches = await ReadEveryPageAsync(
             "batches",
@@ -49,7 +50,6 @@ internal sealed partial class XboxPartnerClient
         long batchId,
         CancellationToken cancellationToken)
     {
-        ValidateSellerId(sellerId);
         if (batchId <= 0)
         {
             throw new ArgumentException("Batch ID must be a positive number.", nameof(batchId));
@@ -76,18 +76,16 @@ internal sealed partial class XboxPartnerClient
     /// <summary>
     /// Starts a test account creation job. Sent exactly once: the create is not idempotent, so a
     /// failure after the request may have reached the server is the caller's to classify, never
-    /// a reason to send it again. <paramref name="sending"/> runs just before the request leaves
-    /// the process, so the caller knows whether a failure could have followed the server seeing it.
+    /// a reason to send it again. <paramref name="sending"/> gets the correlation ID just before the
+    /// request leaves the process, so the caller knows whether a failure could have followed the
+    /// server seeing it, and can trace it.
     /// </summary>
     public async Task<TestAccountJobResult> CreateTestAccountBatchAsync(
         CreateTestAccountBatchRequest request,
         CancellationToken cancellationToken,
-        Action? sending = null)
+        Action<string>? sending = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateSellerId(request.SellerId);
-        ArgumentException.ThrowIfNullOrEmpty(request.Password);
-        ArgumentException.ThrowIfNullOrEmpty(request.SecurityAnswer);
         string body = JsonSerializer.Serialize(request, CreateTestAccountsSerializerOptions);
         using var content = new StringContent(body, Encoding.UTF8, "application/json");
         return await SendTestAccountJobAsync(HttpMethod.Post, TestAccountBatchesPath, content, cancellationToken, sending)
@@ -101,12 +99,6 @@ internal sealed partial class XboxPartnerClient
         string jobId,
         CancellationToken cancellationToken)
     {
-        ValidateSellerId(sellerId);
-        if (batchId <= 0)
-        {
-            throw new ArgumentException("Batch ID must be a positive number.", nameof(batchId));
-        }
-
         ArgumentException.ThrowIfNullOrWhiteSpace(jobId);
         string path = $"{TestAccountBatchesPath}/{Invariant(batchId)}/jobs/{Uri.EscapeDataString(jobId.Trim())}" +
             BuildQueryString(("sellerId", Invariant(sellerId)));
@@ -124,14 +116,8 @@ internal sealed partial class XboxPartnerClient
         long batchId,
         bool allowNotMine,
         CancellationToken cancellationToken,
-        Action? sending = null)
+        Action<string>? sending = null)
     {
-        ValidateSellerId(sellerId);
-        if (batchId <= 0)
-        {
-            throw new ArgumentException("Batch ID must be a positive number.", nameof(batchId));
-        }
-
         string path = $"{TestAccountBatchesPath}/{Invariant(batchId)}" +
             BuildQueryString(
                 ("sellerId", Invariant(sellerId)),
@@ -162,15 +148,9 @@ internal sealed partial class XboxPartnerClient
         UpdateTestAccountBatchRequest request,
         bool allowNotMine,
         CancellationToken cancellationToken,
-        Action? sending = null)
+        Action<string>? sending = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ValidateSellerId(sellerId);
-        if (batchId <= 0)
-        {
-            throw new ArgumentException("Batch ID must be a positive number.", nameof(batchId));
-        }
-
         string path = $"{TestAccountBatchesPath}/{Invariant(batchId)}" +
             BuildQueryString(
                 ("sellerId", Invariant(sellerId)),
@@ -203,7 +183,7 @@ internal sealed partial class XboxPartnerClient
         string path,
         HttpContent? content,
         CancellationToken cancellationToken,
-        Action? sending = null)
+        Action<string>? sending = null)
     {
         var (body, job, retryAfter, correlationId) = await SendTestAccountOperationAsync<TestAccountJob>(
             method,
@@ -231,7 +211,7 @@ internal sealed partial class XboxPartnerClient
         Func<T, bool> isValid,
         string requiredFields,
         CancellationToken cancellationToken,
-        Action? sending)
+        Action<string>? sending)
         where T : class
     {
         string correlationId = Guid.NewGuid().ToString();
@@ -242,16 +222,15 @@ internal sealed partial class XboxPartnerClient
             "application/json",
             cancellationToken,
             correlationId,
-            sending,
+            sending is null ? null : () => sending(correlationId),
             serviceName: "Test account").ConfigureAwait(false);
         correlationId = ReadCorrelationId(response) ?? correlationId;
         TimeSpan? retryAfter = ReadRetryAfter(response);
         string body;
         try
         {
-            using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-            body = await ReadResponseBodyWithLimitAsync(
-                response.Content, bodyTimeout.Token, serviceName: "Test account").ConfigureAwait(false);
+            body = await ReadResponseBodyAsync(
+                response, correlationId, cancellationToken, serviceName: "Test account").ConfigureAwait(false);
         }
         catch (InvalidOperationException exception)
         {
@@ -301,8 +280,11 @@ internal sealed partial class XboxPartnerClient
 }
 
 /// <summary>
-/// Filters for listing test account batches. Only <see cref="Keyword"/> is applied when XboxPartner
-/// reads the seller's batches; XboxPartner applies the rest afterwards.
+/// Filters for listing test account batches. Only <see cref="Keyword"/> and <see cref="Xuid"/> are
+/// applied when XboxPartner reads the seller's batches; XboxPartner applies the rest afterwards.
+/// <see cref="Xuid"/> asks for the batch holding the account with that XBOX user ID, and can't be
+/// combined with <see cref="Keyword"/>. A service that predates <see cref="Xuid"/> ignores it and
+/// returns the unfiltered list.
 /// </summary>
 public sealed record TestAccountBatchFilter(
     bool Mine = false,
@@ -311,7 +293,9 @@ public sealed record TestAccountBatchFilter(
     string? Keyword = null,
     string? State = null,
     int? Top = null,
-    bool IncludeSandboxes = false);
+    bool IncludeSandboxes = false,
+    bool Expired = false,
+    string? Xuid = null);
 
 /// <summary>
 /// A test account batch as returned by XboxPartner. Mirrors the server's contract so table
@@ -386,16 +370,6 @@ public sealed class CreateTestAccountBatchRequest
     public string? Subscription { get; init; }
 }
 
-/// <summary>The states <see cref="TestAccountJob.State"/> can take.</summary>
-public static class TestAccountJobState
-{
-    public const string Running = "running";
-
-    public const string Succeeded = "succeeded";
-
-    public const string Failed = "failed";
-}
-
 /// <summary>
 /// A test account creation job, as the create response and every job read return it. The create
 /// response also carries <c>sandboxes</c>, <c>locale</c>, and <c>subscription</c>, which the raw
@@ -414,9 +388,9 @@ public sealed record TestAccountJob(
 {
     public bool IsRunning => !IsSucceeded && !IsFailed;
 
-    public bool IsSucceeded => string.Equals(State, TestAccountJobState.Succeeded, StringComparison.OrdinalIgnoreCase);
+    public bool IsSucceeded => string.Equals(State, "succeeded", StringComparison.OrdinalIgnoreCase);
 
-    public bool IsFailed => string.Equals(State, TestAccountJobState.Failed, StringComparison.OrdinalIgnoreCase);
+    public bool IsFailed => string.Equals(State, "failed", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>A job read with the raw body and the headers the CLI acts on.</summary>
@@ -471,14 +445,6 @@ public sealed class UpdateTestAccountBatchRequest
     public bool? ReplaceKeywords { get; init; }
 }
 
-/// <summary>The states <see cref="TestAccountBatchUpdate.State"/> can take.</summary>
-public static class TestAccountBatchUpdateState
-{
-    public const string Updating = "updating";
-
-    public const string Unchanged = "unchanged";
-}
-
 /// <summary>
 /// The answer to a batch update: the values the batch will have once the update job
 /// completes. The job endpoint cannot read update jobs, so the CLI follows one by reading the
@@ -492,8 +458,7 @@ public sealed record TestAccountBatchUpdate(
     DateTimeOffset? AccessExpirationDate,
     IReadOnlyList<string>? Keywords)
 {
-    public bool IsUnchanged =>
-        string.Equals(State, TestAccountBatchUpdateState.Unchanged, StringComparison.OrdinalIgnoreCase);
+    public bool IsUnchanged => string.Equals(State, "unchanged", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>An update answer with the raw body and the headers the CLI acts on.</summary>

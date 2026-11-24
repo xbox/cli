@@ -76,6 +76,10 @@ Or set several keys at once:
 xbox --playfab-title-id ABC123 playfab title-data set --data '{"MyKey":"my-value","OtherKey":"2"}'
 ```
 
+In Windows PowerShell 5.1, `--data` gets invalid JSON, so set each key with `--key` and
+`--value`, or use PowerShell 7.3 or later. See
+[PlayFab API integration](../../playfab-api.md#windows-powershell-51).
+
 On success, `set` writes the keys it set, such as `{"applied":["MyKey","OtherKey"]}`.
 
 ## `playfab title-data delete`

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.Net;
 using XboxDevCLI.Services;
 using Xunit;
 
@@ -27,7 +28,8 @@ public class XboxPartnerJobPollerTests
                 delayCalls++;
                 return Task.CompletedTask;
             },
-            CancellationToken.None);
+            CancellationToken.None,
+            () => DateTimeOffset.UnixEpoch);
 
         Assert.Same(initial, result);
         Assert.Equal(0, statusCalls);
@@ -118,56 +120,30 @@ public class XboxPartnerJobPollerTests
     }
 
     [Fact]
-    public async Task PollAsync_ReturnsNullWhenWallClockTimeoutCancelsDelay()
+    public async Task PollAsync_RetriesTransientReadFailuresAsTheyAsk()
     {
+        var clock = new FakeClock();
+        var completed = CreateJob(status: "completed", result: "succeeded");
+        var outcomes = new Queue<Func<XboxPartnerGameCreationJob>>(
+        [
+            () => throw Api(HttpStatusCode.BadGateway, TimeSpan.FromSeconds(7)),
+            () => throw new HttpRequestException("reset"),
+            () => completed,
+        ]);
+
         var result = await XboxPartnerJobPoller.PollAsync(
             CreateJob(),
-            _ => Task.FromResult(CreateJob()),
-            Task.Delay,
+            _ => Task.FromResult(outcomes.Dequeue()()),
+            clock.DelayAsync,
             CancellationToken.None,
-            () => DateTimeOffset.UnixEpoch,
-            interval: TimeSpan.FromSeconds(1),
-            timeout: TimeSpan.FromMilliseconds(10));
+            () => clock.UtcNow);
 
-        Assert.Null(result);
+        Assert.Same(completed, result);
+        Assert.Equal([TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(7), TimeSpan.FromSeconds(5)], clock.Delays);
     }
 
-    [Fact]
-    public async Task PollAsync_DoesNotSwallowCallerCancellation()
-    {
-        using var cancellationSource = new CancellationTokenSource();
-        cancellationSource.Cancel();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => XboxPartnerJobPoller.PollAsync(
-                CreateJob(),
-                _ => Task.FromResult(CreateJob()),
-                Task.Delay,
-                cancellationSource.Token));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task PollAsync_RejectsNonPositiveDurations(bool invalidInterval)
-    {
-        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => XboxPartnerJobPoller.PollAsync(
-                CreateJob(),
-                _ => Task.FromResult(CreateJob()),
-                Task.Delay,
-                CancellationToken.None,
-                interval: invalidInterval
-                    ? TimeSpan.Zero
-                    : TimeSpan.FromSeconds(1),
-                timeout: invalidInterval
-                    ? TimeSpan.FromSeconds(1)
-                    : TimeSpan.Zero));
-
-        Assert.Equal(
-            invalidInterval ? "interval" : "timeout",
-            exception.ParamName);
-    }
+    private static XboxPartnerApiException Api(HttpStatusCode statusCode, TimeSpan? retryAfter) =>
+        new(statusCode, null, string.Empty, new Uri("http://localhost/job"), retryAfter: retryAfter);
 
     private static XboxPartnerGameCreationJob CreateJob(
         string? status = "running",

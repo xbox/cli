@@ -30,13 +30,14 @@ internal static class MpsCommandFactory
 {
     /// <summary>
     /// Describes a single MPS leaf command: its command path under <c>mps</c>
-    /// (e.g. <c>["build", "alias", "create"]</c>), the PlayFab API path it calls, and a
-    /// short description.
+    /// (e.g. <c>["build", "alias", "create"]</c>), the PlayFab API path it calls, a
+    /// short description, and the example Help shows.
     /// </summary>
     /// <param name="Path">The command path segments under <c>mps</c> (noun groups then verb).</param>
     /// <param name="ApiPath">The PlayFab API path to call (e.g. <c>/MultiplayerServer/GetBuild</c>).</param>
     /// <param name="Description">A short, human-readable description.</param>
-    internal sealed record MpsApiCommand(string[] Path, string ApiPath, string Description);
+    /// <param name="Example">A complete invocation for Help's EXAMPLES section.</param>
+    internal sealed record MpsApiCommand(string[] Path, string ApiPath, string Description, string Example);
 
     /// <summary>
     /// The MPS leaf commands that map one-to-one to a single Multiplayer Server API call,
@@ -47,82 +48,82 @@ internal static class MpsCommandFactory
     internal static readonly IReadOnlyList<MpsApiCommand> ApiCommands = new[]
     {
         // title
-        new MpsApiCommand(new[] { "title", "enable" }, "/MultiplayerServer/EnableMultiplayerServersForTitle", "Enables the multiplayer server feature for a title."),
-        new MpsApiCommand(new[] { "title", "status" }, "/MultiplayerServer/GetTitleEnabledForMultiplayerServersStatus", "Gets whether a title is enabled for the multiplayer server feature."),
+        new MpsApiCommand(new[] { "title", "enable" }, "/MultiplayerServer/EnableMultiplayerServersForTitle", "Enables the multiplayer server feature for a title.", "xbox playfab mps title enable --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "title", "status" }, "/MultiplayerServer/GetTitleEnabledForMultiplayerServersStatus", "Gets whether a title is enabled for the multiplayer server feature.", "xbox playfab mps title status"),
 
         // build
-        new MpsApiCommand(new[] { "build", "get" }, "/MultiplayerServer/GetBuild", "Gets a multiplayer server build."),
-        new MpsApiCommand(new[] { "build", "list" }, "/MultiplayerServer/ListBuildSummariesV2", "Lists one page of summarized details of multiplayer server builds for a title."),
-        new MpsApiCommand(new[] { "build", "update-name" }, "/MultiplayerServer/UpdateBuildName", "Updates a multiplayer server build's name."),
-        new MpsApiCommand(new[] { "build", "delete" }, "/MultiplayerServer/DeleteBuild", "Deletes a multiplayer server build."),
+        new MpsApiCommand(new[] { "build", "get" }, "/MultiplayerServer/GetBuild", "Gets a multiplayer server build.", "xbox playfab mps build get --body-file get-build.json"),
+        new MpsApiCommand(new[] { "build", "list" }, "/MultiplayerServer/ListBuildSummariesV2", "Lists one page of summarized details of multiplayer server builds for a title.", "xbox playfab mps build list --output table"),
+        new MpsApiCommand(new[] { "build", "update-name" }, "/MultiplayerServer/UpdateBuildName", "Updates a multiplayer server build's name.", "xbox playfab mps build update-name --body-file update-build-name.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "build", "delete" }, "/MultiplayerServer/DeleteBuild", "Deletes a multiplayer server build.", "xbox playfab mps build delete --body-file delete-build.json --playfab-title-id ABC123 --confirm"),
 
         // build alias
-        new MpsApiCommand(new[] { "build", "alias", "get" }, "/MultiplayerServer/GetBuildAlias", "Gets a multiplayer server build alias."),
-        new MpsApiCommand(new[] { "build", "alias", "list" }, "/MultiplayerServer/ListBuildAliases", "Lists one page of build alias details for a title."),
-        new MpsApiCommand(new[] { "build", "alias", "create" }, "/MultiplayerServer/CreateBuildAlias", "Creates a multiplayer server build alias."),
-        new MpsApiCommand(new[] { "build", "alias", "update" }, "/MultiplayerServer/UpdateBuildAlias", "Updates a multiplayer server build alias."),
-        new MpsApiCommand(new[] { "build", "alias", "delete" }, "/MultiplayerServer/DeleteBuildAlias", "Deletes a multiplayer server build alias."),
+        new MpsApiCommand(new[] { "build", "alias", "get" }, "/MultiplayerServer/GetBuildAlias", "Gets a multiplayer server build alias.", "xbox playfab mps build alias get --body-file get-build-alias.json"),
+        new MpsApiCommand(new[] { "build", "alias", "list" }, "/MultiplayerServer/ListBuildAliases", "Lists one page of build alias details for a title.", "xbox playfab mps build alias list --output table"),
+        new MpsApiCommand(new[] { "build", "alias", "create" }, "/MultiplayerServer/CreateBuildAlias", "Creates a multiplayer server build alias.", "xbox playfab mps build alias create --body-file create-build-alias.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "build", "alias", "update" }, "/MultiplayerServer/UpdateBuildAlias", "Updates a multiplayer server build alias.", "xbox playfab mps build alias update --body-file update-build-alias.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "build", "alias", "delete" }, "/MultiplayerServer/DeleteBuildAlias", "Deletes a multiplayer server build alias.", "xbox playfab mps build alias delete --body-file delete-build-alias.json --playfab-title-id ABC123 --confirm"),
 
         // build region
-        new MpsApiCommand(new[] { "build", "region", "update" }, "/MultiplayerServer/UpdateBuildRegion", "Updates a multiplayer server build's region."),
-        new MpsApiCommand(new[] { "build", "region", "update-all" }, "/MultiplayerServer/UpdateBuildRegions", "Updates all of a multiplayer server build's regions in bulk."),
-        new MpsApiCommand(new[] { "build", "region", "delete" }, "/MultiplayerServer/DeleteBuildRegion", "Removes a multiplayer server build's region."),
+        new MpsApiCommand(new[] { "build", "region", "update" }, "/MultiplayerServer/UpdateBuildRegion", "Updates a multiplayer server build's region.", "xbox playfab mps build region update --body-file update-build-region.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "build", "region", "update-all" }, "/MultiplayerServer/UpdateBuildRegions", "Updates all of a multiplayer server build's regions in bulk.", "xbox playfab mps build region update-all --body-file update-build-regions.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "build", "region", "delete" }, "/MultiplayerServer/DeleteBuildRegion", "Removes a multiplayer server build's region.", "xbox playfab mps build region delete --body-file delete-build-region.json --playfab-title-id ABC123 --confirm"),
 
         // server (running sessions)
-        new MpsApiCommand(new[] { "server", "get" }, "/MultiplayerServer/GetMultiplayerServerDetails", "Gets multiplayer server session details for a build."),
-        new MpsApiCommand(new[] { "server", "list" }, "/MultiplayerServer/ListMultiplayerServers", "Lists one page of multiplayer server sessions for a build in a region."),
-        new MpsApiCommand(new[] { "server", "list-archived" }, "/MultiplayerServer/ListArchivedMultiplayerServers", "Lists one page of archived multiplayer server sessions for a build."),
-        new MpsApiCommand(new[] { "server", "request" }, "/MultiplayerServer/RequestMultiplayerServer", "Requests a multiplayer server session."),
-        new MpsApiCommand(new[] { "server", "shutdown" }, "/MultiplayerServer/ShutdownMultiplayerServer", "Shuts down a multiplayer server session."),
-        new MpsApiCommand(new[] { "server", "get-logs" }, "/MultiplayerServer/GetMultiplayerServerLogs", "Gets multiplayer server logs after a server has terminated."),
-        new MpsApiCommand(new[] { "server", "get-session-logs" }, "/MultiplayerServer/GetMultiplayerSessionLogsBySessionId", "Gets multiplayer server logs by session ID after a server has terminated."),
+        new MpsApiCommand(new[] { "server", "get" }, "/MultiplayerServer/GetMultiplayerServerDetails", "Gets multiplayer server session details for a build.", "xbox playfab mps server get --body-file get-server-details.json"),
+        new MpsApiCommand(new[] { "server", "list" }, "/MultiplayerServer/ListMultiplayerServers", "Lists one page of multiplayer server sessions for a build in a region.", "xbox playfab mps server list --body-file list-servers.json --output table"),
+        new MpsApiCommand(new[] { "server", "list-archived" }, "/MultiplayerServer/ListArchivedMultiplayerServers", "Lists one page of archived multiplayer server sessions for a build.", "xbox playfab mps server list-archived --body-file list-archived-servers.json --output table"),
+        new MpsApiCommand(new[] { "server", "request" }, "/MultiplayerServer/RequestMultiplayerServer", "Requests a multiplayer server session.", "xbox playfab mps server request --body-file request-server.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "server", "shutdown" }, "/MultiplayerServer/ShutdownMultiplayerServer", "Shuts down a multiplayer server session.", "xbox playfab mps server shutdown --body-file shutdown-server.json --playfab-title-id ABC123 --confirm"),
+        new MpsApiCommand(new[] { "server", "get-logs" }, "/MultiplayerServer/GetMultiplayerServerLogs", "Gets multiplayer server logs after a server has terminated.", "xbox playfab mps server get-logs --body-file get-server-logs.json"),
+        new MpsApiCommand(new[] { "server", "get-session-logs" }, "/MultiplayerServer/GetMultiplayerSessionLogsBySessionId", "Gets multiplayer server logs by session ID after a server has terminated.", "xbox playfab mps server get-session-logs --body-file get-session-logs.json"),
 
         // asset
-        new MpsApiCommand(new[] { "asset", "list" }, "/MultiplayerServer/ListAssetSummaries", "Lists one page of multiplayer server game assets for a title."),
-        new MpsApiCommand(new[] { "asset", "delete" }, "/MultiplayerServer/DeleteAsset", "Deletes a multiplayer server game asset for a title."),
-        new MpsApiCommand(new[] { "asset", "get-upload-url" }, "/MultiplayerServer/GetAssetUploadUrl", "Gets the URL to upload assets to."),
-        new MpsApiCommand(new[] { "asset", "get-download-url" }, "/MultiplayerServer/GetAssetDownloadUrl", "Gets a URL that can be used to download the specified asset."),
+        new MpsApiCommand(new[] { "asset", "list" }, "/MultiplayerServer/ListAssetSummaries", "Lists one page of multiplayer server game assets for a title.", "xbox playfab mps asset list --output table"),
+        new MpsApiCommand(new[] { "asset", "delete" }, "/MultiplayerServer/DeleteAsset", "Deletes a multiplayer server game asset for a title.", "xbox playfab mps asset delete --body-file delete-asset.json --playfab-title-id ABC123 --confirm"),
+        new MpsApiCommand(new[] { "asset", "get-upload-url" }, "/MultiplayerServer/GetAssetUploadUrl", "Gets the URL to upload assets to.", "xbox playfab mps asset get-upload-url --body-file get-asset-upload-url.json"),
+        new MpsApiCommand(new[] { "asset", "get-download-url" }, "/MultiplayerServer/GetAssetDownloadUrl", "Gets a URL that can be used to download the specified asset.", "xbox playfab mps asset get-download-url --body-file get-asset-download-url.json"),
 
         // certificate
-        new MpsApiCommand(new[] { "certificate", "list" }, "/MultiplayerServer/ListCertificateSummaries", "Lists one page of multiplayer server game certificates for a title."),
-        new MpsApiCommand(new[] { "certificate", "upload" }, "/MultiplayerServer/UploadCertificate", "Uploads a multiplayer server game certificate."),
-        new MpsApiCommand(new[] { "certificate", "delete" }, "/MultiplayerServer/DeleteCertificate", "Deletes a multiplayer server game certificate."),
+        new MpsApiCommand(new[] { "certificate", "list" }, "/MultiplayerServer/ListCertificateSummaries", "Lists one page of multiplayer server game certificates for a title.", "xbox playfab mps certificate list --output table"),
+        new MpsApiCommand(new[] { "certificate", "upload" }, "/MultiplayerServer/UploadCertificate", "Uploads a multiplayer server game certificate.", "xbox playfab mps certificate upload --body-file ./certificate.json"),
+        new MpsApiCommand(new[] { "certificate", "delete" }, "/MultiplayerServer/DeleteCertificate", "Deletes a multiplayer server game certificate.", "xbox playfab mps certificate delete --body-file delete-certificate.json --playfab-title-id ABC123 --confirm"),
 
         // secret
-        new MpsApiCommand(new[] { "secret", "list" }, "/MultiplayerServer/ListSecretSummaries", "Lists one page of multiplayer server game secrets for a title."),
-        new MpsApiCommand(new[] { "secret", "upload" }, "/MultiplayerServer/UploadSecret", "Uploads a multiplayer server game secret."),
-        new MpsApiCommand(new[] { "secret", "delete" }, "/MultiplayerServer/DeleteSecret", "Deletes a multiplayer server game secret."),
+        new MpsApiCommand(new[] { "secret", "list" }, "/MultiplayerServer/ListSecretSummaries", "Lists one page of multiplayer server game secrets for a title.", "xbox playfab mps secret list --output table"),
+        new MpsApiCommand(new[] { "secret", "upload" }, "/MultiplayerServer/UploadSecret", "Uploads a multiplayer server game secret.", "xbox playfab mps secret upload --body-file ./secret.json"),
+        new MpsApiCommand(new[] { "secret", "delete" }, "/MultiplayerServer/DeleteSecret", "Deletes a multiplayer server game secret.", "xbox playfab mps secret delete --body-file delete-secret.json --playfab-title-id ABC123 --confirm"),
 
         // container-image
-        new MpsApiCommand(new[] { "container-image", "list" }, "/MultiplayerServer/ListContainerImages", "Lists one page of custom container images for a title."),
-        new MpsApiCommand(new[] { "container-image", "list-tags" }, "/MultiplayerServer/ListContainerImageTags", "Lists one page of the tags for a custom container image."),
-        new MpsApiCommand(new[] { "container-image", "untag" }, "/MultiplayerServer/UntagContainerImage", "Untags a container image."),
-        new MpsApiCommand(new[] { "container-image", "repository", "delete" }, "/MultiplayerServer/DeleteContainerImageRepository", "Deletes a container image repository."),
+        new MpsApiCommand(new[] { "container-image", "list" }, "/MultiplayerServer/ListContainerImages", "Lists one page of custom container images for a title.", "xbox playfab mps container-image list --output table"),
+        new MpsApiCommand(new[] { "container-image", "list-tags" }, "/MultiplayerServer/ListContainerImageTags", "Lists one page of the tags for a custom container image.", "xbox playfab mps container-image list-tags --body-file list-image-tags.json --output table"),
+        new MpsApiCommand(new[] { "container-image", "untag" }, "/MultiplayerServer/UntagContainerImage", "Untags a container image.", "xbox playfab mps container-image untag --body-file untag-image.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "container-image", "repository", "delete" }, "/MultiplayerServer/DeleteContainerImageRepository", "Deletes a container image repository.", "xbox playfab mps container-image repository delete --body-file delete-image-repository.json --playfab-title-id ABC123 --confirm"),
 
         // container-registry
-        new MpsApiCommand(new[] { "container-registry", "credentials", "get" }, "/MultiplayerServer/GetContainerRegistryCredentials", "Gets the credentials to the container registry."),
-        new MpsApiCommand(new[] { "container-registry", "credentials", "rollover" }, "/MultiplayerServer/RolloverContainerRegistryCredentials", "Rolls over the credentials to the container registry."),
+        new MpsApiCommand(new[] { "container-registry", "credentials", "get" }, "/MultiplayerServer/GetContainerRegistryCredentials", "Gets the credentials to the container registry.", "xbox playfab mps container-registry credentials get --output table"),
+        new MpsApiCommand(new[] { "container-registry", "credentials", "rollover" }, "/MultiplayerServer/RolloverContainerRegistryCredentials", "Rolls over the credentials to the container registry.", "xbox playfab mps container-registry credentials rollover --playfab-title-id ABC123"),
 
         // quota
-        new MpsApiCommand(new[] { "quota", "get" }, "/MultiplayerServer/GetTitleMultiplayerServersQuotas", "Gets the quotas for a title in relation to multiplayer servers."),
-        new MpsApiCommand(new[] { "quota", "change", "get" }, "/MultiplayerServer/GetTitleMultiplayerServersQuotaChange", "Gets a title's server quota change request."),
-        new MpsApiCommand(new[] { "quota", "change", "list" }, "/MultiplayerServer/ListTitleMultiplayerServersQuotaChanges", "Lists all of a title's server quota change requests."),
-        new MpsApiCommand(new[] { "quota", "change", "create" }, "/MultiplayerServer/CreateTitleMultiplayerServersQuotaChange", "Creates a request to change a title's multiplayer server quotas."),
+        new MpsApiCommand(new[] { "quota", "get" }, "/MultiplayerServer/GetTitleMultiplayerServersQuotas", "Gets the quotas for a title in relation to multiplayer servers.", "xbox playfab mps quota get"),
+        new MpsApiCommand(new[] { "quota", "change", "get" }, "/MultiplayerServer/GetTitleMultiplayerServersQuotaChange", "Gets a title's server quota change request.", "xbox playfab mps quota change get --body-file get-quota-change.json --output table"),
+        new MpsApiCommand(new[] { "quota", "change", "list" }, "/MultiplayerServer/ListTitleMultiplayerServersQuotaChanges", "Lists all of a title's server quota change requests.", "xbox playfab mps quota change list --output table"),
+        new MpsApiCommand(new[] { "quota", "change", "create" }, "/MultiplayerServer/CreateTitleMultiplayerServersQuotaChange", "Creates a request to change a title's multiplayer server quotas.", "xbox playfab mps quota change create --body-file create-quota-change.json --playfab-title-id ABC123"),
 
         // quality of service
-        new MpsApiCommand(new[] { "qos-server", "list" }, "/MultiplayerServer/ListQosServersForTitle", "Lists quality of service servers for the title."),
-        new MpsApiCommand(new[] { "party-qos-server", "list" }, "/MultiplayerServer/ListPartyQosServers", "Lists quality of service servers for party."),
+        new MpsApiCommand(new[] { "qos-server", "list" }, "/MultiplayerServer/ListQosServersForTitle", "Lists quality of service servers for the title.", "xbox playfab mps qos-server list --output table"),
+        new MpsApiCommand(new[] { "party-qos-server", "list" }, "/MultiplayerServer/ListPartyQosServers", "Lists quality of service servers for party.", "xbox playfab mps party-qos-server list --output table"),
 
         // virtual-machine
-        new MpsApiCommand(new[] { "virtual-machine", "list" }, "/MultiplayerServer/ListVirtualMachineSummaries", "Lists one page of virtual machines for a title."),
+        new MpsApiCommand(new[] { "virtual-machine", "list" }, "/MultiplayerServer/ListVirtualMachineSummaries", "Lists one page of virtual machines for a title.", "xbox playfab mps virtual-machine list --body-file list-virtual-machines.json --output table"),
 
         // remote-user / remote-login
-        new MpsApiCommand(new[] { "remote-user", "create" }, "/MultiplayerServer/CreateRemoteUser", "Creates a remote user to log on to a VM for a multiplayer server build."),
-        new MpsApiCommand(new[] { "remote-user", "delete" }, "/MultiplayerServer/DeleteRemoteUser", "Deletes a remote user to log on to a VM for a multiplayer server build."),
-        new MpsApiCommand(new[] { "remote-login", "get-endpoint" }, "/MultiplayerServer/GetRemoteLoginEndpoint", "Gets a remote login endpoint to a VM that is hosting a multiplayer server build."),
+        new MpsApiCommand(new[] { "remote-user", "create" }, "/MultiplayerServer/CreateRemoteUser", "Creates a remote user to log on to a VM for a multiplayer server build.", "xbox playfab mps remote-user create --body-file create-remote-user.json --playfab-title-id ABC123"),
+        new MpsApiCommand(new[] { "remote-user", "delete" }, "/MultiplayerServer/DeleteRemoteUser", "Deletes a remote user to log on to a VM for a multiplayer server build.", "xbox playfab mps remote-user delete --body-file delete-remote-user.json --playfab-title-id ABC123 --confirm"),
+        new MpsApiCommand(new[] { "remote-login", "get-endpoint" }, "/MultiplayerServer/GetRemoteLoginEndpoint", "Gets a remote login endpoint to a VM that is hosting a multiplayer server build.", "xbox playfab mps remote-login get-endpoint --body-file get-remote-login-endpoint.json"),
 
         // party
-        new MpsApiCommand(new[] { "party", "request" }, "/Party/RequestPartyService", "Requests a party session."),
+        new MpsApiCommand(new[] { "party", "request" }, "/Party/RequestPartyService", "Requests a party session.", "xbox playfab mps party request --body-file request-party.json --playfab-title-id ABC123"),
     };
 
     /// <summary>
@@ -208,7 +209,7 @@ internal static class MpsCommandFactory
             var groupPath = apiCommand.Path[..^1];
             var verb = apiCommand.Path[^1];
             var parent = GetOrCreateGroup(groupPath);
-            parent.Subcommands.Add(CreateApiCommand(verb, apiCommand.Description, apiCommand.ApiPath));
+            parent.Subcommands.Add(CreateApiCommand(verb, apiCommand.Description, apiCommand.ApiPath, apiCommand.Example));
         }
 
         // Commands that don't map one-to-one to a single API path:
@@ -436,8 +437,7 @@ internal static class MpsCommandFactory
     /// </summary>
     /// <param name="Fields">The request's fields, appended to the <c>--body-file</c> description.</param>
     /// <param name="Holds">What the body holds, for the line in LEARN MORE that says why.</param>
-    /// <param name="Example">A complete invocation that reads the body from a file.</param>
-    private sealed record SecretBody(string Fields, string Holds, string Example);
+    private sealed record SecretBody(string Fields, string Holds);
 
     /// <summary>
     /// The MPS operations whose request body carries a credential, keyed by API path. Their
@@ -452,14 +452,12 @@ internal static class MpsCommandFactory
             $"({nameof(Certificate.Name)}, {nameof(Certificate.Base64EncodedValue)}, " +
             $"{nameof(Certificate.Password)}), {nameof(UploadCertificateRequest.ForceUpdate)}, " +
             $"{nameof(UploadCertificateRequest.CustomTags)}.",
-            "the certificate and its PFX password",
-            "xbox playfab mps certificate upload --body-file ./certificate.json"),
+            "the certificate and its PFX password"),
         ["/MultiplayerServer/UploadSecret"] = new(
             $"Fields: {nameof(UploadSecretRequest.GameSecret)} " +
             $"({nameof(Secret.Name)}, {nameof(Secret.Value)}, {nameof(Secret.ExpirationDate)}), " +
             $"{nameof(UploadSecretRequest.ForceUpdate)}, {nameof(UploadSecretRequest.CustomTags)}.",
-            "the secret's value",
-            "xbox playfab mps secret upload --body-file ./secret.json"),
+            "the secret's value"),
     };
 
     /// <summary>
@@ -471,7 +469,7 @@ internal static class MpsCommandFactory
         "inline value is kept in shell history and process listings. Put the JSON in a file and " +
         "pass --body-file <path>, or pass --body-file - to read it from stdin.";
 
-    private static Command CreateApiCommand(string name, string description, string apiPath)
+    private static Command CreateApiCommand(string name, string description, string apiPath, string example)
     {
         var secretBody = SecretBodies.GetValueOrDefault(apiPath);
 
@@ -534,7 +532,7 @@ internal static class MpsCommandFactory
         // where one exists, is what makes `--output table` available for this command.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [apiPath],
-            Examples: secretBody is null ? null : [secretBody.Example],
+            Examples: [example],
             LearnMore: secretBody is null
                 ? null
                 :
@@ -566,6 +564,7 @@ internal static class MpsCommandFactory
                 result.AddError($"Invalid value for --type. Allowed values: {string.Join(", ", BuildCreateEndpoints.Keys)}.");
             }
         });
+        typeOption.CompletionSources.Add([.. BuildCreateEndpoints.Keys]);
 
         var bodyOption = new Option<string?>("--body")
         {
@@ -595,6 +594,11 @@ internal static class MpsCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [.. BuildCreateEndpoints.Values],
+            Examples:
+            [
+                "xbox playfab mps build create --type managed --body-file create-build.json --playfab-title-id ABC123",
+                "xbox playfab mps build create --type custom --body-file create-container-build.json --playfab-title-id ABC123",
+            ],
             LearnMore: ["--type selects which of these the command calls."]));
     }
 
@@ -719,7 +723,7 @@ internal static class MpsCommandFactory
                 TelemetryRecorder.RecordError(ex);
             }
 
-            Console.Error.WriteLine($"Asset upload failed: {TerminalText.Message(ex.Message)}");
+            Console.Error.WriteLine($"Asset upload failed: {TerminalText.Message(NetworkErrors.Describe(ex))}");
             return 1;
         }
     }
@@ -795,7 +799,7 @@ internal static class MpsCommandFactory
 
                 throw new InvalidOperationException(
                     $"Failed to upload block {blockNum} after {maxRetries} retries. " +
-                    $"Last error: {lastError?.Message}",
+                    $"Last error: {(lastError is null ? null : NetworkErrors.Describe(lastError))}",
                     lastError);
             }
 

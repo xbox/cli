@@ -10,7 +10,8 @@ namespace XboxDevCLI.Output;
 
 /// <summary>
 /// Renders an API response as a plain text table, driven by the <see cref="TableView"/> a command
-/// declares in its metadata: many records as rows, or a single record as a one-row table.
+/// declares in its metadata: many records as rows, or a single record as a one-row table, or a row
+/// per item of its expanded list.
 /// </summary>
 /// <remarks>
 /// Deliberately not a generic "flatten any JSON" formatter. A command opts in by naming its
@@ -55,25 +56,16 @@ internal static class TableFormatter
     /// </param>
     /// <param name="view">The declared collection and columns.</param>
     /// <returns>The rendered table, or a short notice when the collection is empty.</returns>
-    /// <exception cref="InvalidDataException">
-    /// The payload is not an object, or the declared collection is missing or is neither an array
-    /// nor an object. A missing collection fails rather than reporting no results: that would
-    /// report "nothing to show" for a field the service renamed. An explicitly null collection is
-    /// treated as empty, because null is the service saying it has no value.
+    /// <exception cref="InvalidOperationException">
+    /// The response doesn't have the shape the view declares, which <see cref="JsonElement"/>
+    /// reports when it's read. A missing collection fails rather than reporting no results, which
+    /// would say "nothing to show" for a field the service renamed. An explicitly null collection
+    /// or record is treated as empty, because null is the service saying it has no value.
     /// </exception>
     internal static string Format(JsonElement payload, TableView view)
     {
         ArgumentNullException.ThrowIfNull(view);
         ValidateColumns(view);
-
-        if (payload.ValueKind != JsonValueKind.Object)
-        {
-            var expectation = string.IsNullOrEmpty(view.Collection)
-                ? "Expected a JSON object"
-                : $"Expected a JSON object containing '{view.Collection}'";
-            throw new InvalidDataException(
-                $"{expectation}, but the response was {Describe(payload.ValueKind)}.");
-        }
 
         if (view.IsRecord)
         {
@@ -108,11 +100,8 @@ internal static class TableFormatter
     /// </summary>
     private static List<string[]> ReadCollection(JsonElement payload, string name, TableView view, string? label)
     {
-        if (!payload.TryGetProperty(name, out var collection))
-        {
-            throw new InvalidDataException(
-                $"The response does not contain the expected '{name}' property, so it cannot be shown as a table. Re-run with --output json to see the full response.");
-        }
+        // A missing collection is left as a default element, which JsonElement refuses to read.
+        _ = payload.TryGetProperty(name, out var collection);
 
         // An explicitly null collection is the service saying "no value", which is the same thing
         // to a reader as an empty one. Failing here would make a legitimately empty response exit
@@ -128,12 +117,6 @@ internal static class TableFormatter
     /// </summary>
     private static List<string[]> ReadRows(JsonElement collection, string name, TableView view, string? label)
     {
-        if (collection.ValueKind != JsonValueKind.Array && collection.ValueKind != JsonValueKind.Object)
-        {
-            throw new InvalidDataException(
-                $"The response property '{name}' is {Describe(collection.ValueKind)} rather than an array or an object, so it cannot be shown as a table. Re-run with --output json to see the full response.");
-        }
-
         // Some responses key their records by id or name rather than returning an array — file
         // metadata is keyed by file name, for example. Those are still a list of records to a
         // reader, so the values are enumerated in the order the service returned them.
@@ -141,21 +124,10 @@ internal static class TableFormatter
             ? collection.EnumerateArray().ToArray()
             : collection.EnumerateObject().Select(property => property.Value).ToArray();
 
-        var scalarView = view.Columns.Count == 1 && view.Columns[0].IsElementItself;
-
-        // A record that is not an object has no properties to read. Without this check each
-        // declared column would fall back to the element itself, so ["x"] against a three-column
-        // view would render x | x | x and report success — a plausible-looking row that is not
-        // in the response. Fail instead, unless the view explicitly declares a scalar collection.
-        if (!scalarView)
-        {
-            RequireRecords(records, name);
-        }
-
         var rows = new List<string[]>();
         foreach (var record in records)
         {
-            foreach (var item in ExpandedItems(record, view.Expand, name))
+            foreach (var item in ExpandedItems(record, view.Expand))
             {
                 rows.Add([.. view.Columns.Select(column =>
                     column.IsSourceLabel ? label ?? NullCell
@@ -172,43 +144,17 @@ internal static class TableFormatter
     /// record whose list is absent, null, or empty, gets one undefined item, so the record keeps
     /// its row.
     /// </summary>
-    /// <exception cref="InvalidDataException">
-    /// The list is present but isn't an array, or holds something other than records.
-    /// </exception>
-    private static IEnumerable<JsonElement> ExpandedItems(JsonElement record, string? expand, string name)
+    private static IEnumerable<JsonElement> ExpandedItems(JsonElement record, string? expand)
     {
         if (expand is null
-            || record.ValueKind != JsonValueKind.Object
             || !record.TryGetProperty(expand, out var items)
             || items.ValueKind == JsonValueKind.Null)
         {
             return [default];
         }
 
-        // Fails like a collection that isn't one, or a record that isn't: a row of dashes would
-        // show a role that has members as one without any.
-        if (items.ValueKind != JsonValueKind.Array)
-        {
-            throw new InvalidDataException(
-                $"The response property '{name}' has a record whose '{expand}' is {Describe(items.ValueKind)} rather than an array, so it cannot be shown as a table. Re-run with --output json to see the full response.");
-        }
-
         var itemRecords = items.EnumerateArray().ToArray();
-        RequireRecords(itemRecords, $"{name}.{expand}");
         return itemRecords.Length > 0 ? itemRecords : [default];
-    }
-
-    private static void RequireRecords(JsonElement[] records, string name)
-    {
-        var offending = Array.FindIndex(records, record => record.ValueKind != JsonValueKind.Object);
-        if (offending >= 0)
-        {
-            throw new InvalidDataException(
-                $"The response property '{name}' contains " +
-                $"{Describe(records[offending].ValueKind)} at index {offending} rather than an " +
-                "object, so its columns cannot be read. Re-run with --output json to see the " +
-                "full response.");
-        }
     }
 
     private static void ValidateColumns(TableView view)
@@ -224,8 +170,8 @@ internal static class TableFormatter
     }
 
     /// <summary>
-    /// Renders a single record as a one-row table, with the same headers and separator a
-    /// collection gets.
+    /// Renders a single record as a one-row table, or as a row per item of its expanded list, with
+    /// the same headers and separator a collection gets.
     /// </summary>
     /// <remarks>
     /// One layout for everything: a reader should not have to work out which shape a command
@@ -243,32 +189,26 @@ internal static class TableFormatter
 
         if (!string.IsNullOrEmpty(view.Collection))
         {
-            if (!payload.TryGetProperty(view.Collection, out record))
-            {
-                throw new InvalidDataException(
-                    $"The response does not contain the expected '{view.Collection}' property, so it cannot be shown as a table. Re-run with --output json to see the full response.");
-            }
+            // A missing record is left as a default element, which JsonElement refuses to read.
+            _ = payload.TryGetProperty(view.Collection, out record);
 
             if (record.ValueKind == JsonValueKind.Null)
             {
                 return EmptyNotice;
             }
-
-            if (record.ValueKind != JsonValueKind.Object)
-            {
-                throw new InvalidDataException(
-                    $"The response property '{view.Collection}' is {Describe(record.ValueKind)} rather than an object, so it cannot be shown as a table. Re-run with --output json to see the full response.");
-            }
         }
 
-        var row = view.Columns.Select(column => ReadCell(record, column)).ToArray();
-        return Render(view.Columns, [row]);
+        var rows = ExpandedItems(record, view.Expand)
+            .Select(item => view.Columns.Select(column => ReadCell(record, column, view.Expand, item)).ToArray())
+            .ToArray();
+        return Render(view.Columns, rows);
     }
 
     /// <summary>
     /// Reads a cell value, walking a dotted path so a column can surface a nested field
     /// explicitly rather than having the renderer guess at nesting. A path through the view's
-    /// expanded list reads the row's item rather than the whole list.
+    /// expanded list reads the row's item rather than the whole list, unless the column sets
+    /// <see cref="TableColumn.ReadsWholeList"/>.
     /// </summary>
     private static string ReadCell(
         JsonElement record,
@@ -282,16 +222,24 @@ internal static class TableFormatter
         if (!column.IsElementItself)
         {
             var segments = column.Property.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (expand is not null && segments.Length > 0 && segments[0] == expand)
+            if (expand is not null && !column.ReadsWholeList && segments.Length > 0 && segments[0] == expand)
             {
+                // A record with no items gets an undefined one, whose fields read as missing.
+                if (item.ValueKind == JsonValueKind.Undefined)
+                {
+                    return NullCell;
+                }
+
                 current = item;
                 segments = segments[1..];
             }
 
-            foreach (var segment in segments)
+            // A field that's missing, or under a nested value that's null or not an object, reads
+            // as missing. Only the record itself must be an object, which TryGetProperty enforces.
+            for (var index = 0; index < segments.Length; index++)
             {
-                if (current.ValueKind != JsonValueKind.Object ||
-                    !current.TryGetProperty(segment, out var next))
+                if ((index > 0 && current.ValueKind != JsonValueKind.Object) ||
+                    !current.TryGetProperty(segments[index], out var next))
                 {
                     return NullCell;
                 }
@@ -313,8 +261,7 @@ internal static class TableFormatter
             return TableColumn.RedactedCell;
         }
 
-        string value = Stringify(current);
-        return column.Transform is null ? value : column.Transform(value);
+        return column.Transform is null ? Stringify(current) : column.Transform(current);
     }
 
     private static string Stringify(JsonElement value) => value.ValueKind switch
@@ -486,15 +433,4 @@ internal static class TableFormatter
 
         return string.Concat(value.AsSpan(0, kept), suffix);
     }
-
-    private static string Describe(JsonValueKind kind) => kind switch
-    {
-        JsonValueKind.Object => "an object",
-        JsonValueKind.Array => "an array",
-        JsonValueKind.String => "a string",
-        JsonValueKind.Number => "a number",
-        JsonValueKind.True or JsonValueKind.False => "a boolean",
-        JsonValueKind.Null or JsonValueKind.Undefined => "null",
-        _ => string.Create(CultureInfo.InvariantCulture, $"{kind}"),
-    };
 }

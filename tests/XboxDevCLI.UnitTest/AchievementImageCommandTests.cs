@@ -1153,8 +1153,7 @@ public sealed class AchievementImageCommandTests
                 "--asset-id", assetId, "--seller-id", "12345"], handler);
 
         Assert.Equal(1, result.Code);
-        Assert.Contains("DESCRIPTION", result.Out, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"assetId\"", result.Out, StringComparison.Ordinal);
+        Assert.Empty(result.Out);
         Assert.Contains("--asset-id", result.Error, StringComparison.Ordinal);
         Assert.Empty(handler.Requests);
     }
@@ -1548,6 +1547,8 @@ public sealed class AchievementImageCommandTests
             Assert.Contains(error, dropped.Error, StringComparison.Ordinal);
             Assert.Contains("Upload outcome unknown.", dropped.Error, StringComparison.Ordinal);
             Assert.Equal(2, handler.Requests.Count);
+            Assert.StartsWith(
+                $"x-ms-correlation-id: {handler.CorrelationIds[^1]}{Environment.NewLine}", dropped.Error, StringComparison.Ordinal);
         }
         finally
         {
@@ -2211,6 +2212,35 @@ public sealed class AchievementImageCommandTests
             Assert.Empty(result.Out);
             Assert.Contains("timed out", result.Error, StringComparison.Ordinal);
             Assert.Single(handler.Requests);
+        }
+        finally
+        {
+            DeleteDownloadDestination(destination);
+        }
+    }
+
+    /// <summary>A failed image download says why, as the gateway calls do.</summary>
+    [Fact]
+    public async Task Download_ConnectionFailureSaysItsCause()
+    {
+        string destination = CreateDownloadDestination();
+        var handler = new DownloadHandler((_, _, _) => throw new HttpRequestException(
+            HttpRequestError.SecureConnectionError,
+            "The SSL connection could not be established, see inner exception.",
+            new IOException("Received an unexpected EOF or 0 bytes from the transport stream.")));
+        try
+        {
+            var result = await RunDownloadAsync(
+                ImageWithUrls("https://cdn.example/full.png",
+                    "https://cdn.example/thumb.png"), handler, destination);
+
+            Assert.Equal(1, result.Code);
+            Assert.Empty(result.Out);
+            Assert.Contains(
+                "Request failed: The SSL connection could not be established, see inner exception. " +
+                "Received an unexpected EOF or 0 bytes from the transport stream.",
+                result.Error,
+                StringComparison.Ordinal);
         }
         finally
         {

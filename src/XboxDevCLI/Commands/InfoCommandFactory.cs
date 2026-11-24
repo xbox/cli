@@ -34,6 +34,8 @@ internal static class InfoCommandFactory
             return 0;
         });
 
-        return command.Requires(CommandRequirement.None);
+        return command
+            .Requires(CommandRequirement.None)
+            .WithMetadata(new CommandMetadata(Category: HelpCategory.Support, Examples: ["xbox info"]));
     }
 }

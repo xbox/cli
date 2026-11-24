@@ -4,6 +4,7 @@
 using System.CommandLine;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Output;
 using XboxDevCLI.Presentation;
@@ -24,7 +25,8 @@ namespace XboxDevCLI.Commands;
 /// <para>
 /// Each <c>pc sandbox</c> command maps to one <c>XblPCSandbox.exe</c> command (<c>/get</c>,
 /// <c>/set</c> or <c>/retail</c>, <c>/launchApps</c>) and behaves the same way, so the GDK
-/// documentation and troubleshooting steps apply unchanged.
+/// documentation and troubleshooting steps apply. <c>set</c> also accepts a sandbox number, which
+/// it resolves to a sandbox ID before running the tool.
 /// </para>
 /// </remarks>
 internal static class PcCommandFactory
@@ -45,12 +47,16 @@ internal static class PcCommandFactory
 
     public static Command Create() => Create(PcSandboxDependencies.Default);
 
-    internal static Command Create(PcSandboxDependencies dependencies)
+    /// <param name="dependencies">The PC and the tool.</param>
+    /// <param name="clientFactory">Creates the client that resolves a sandbox number, for tests.</param>
+    internal static Command Create(
+        PcSandboxDependencies dependencies,
+        Func<IConfiguration, XboxPartnerClient>? clientFactory = null)
     {
         var pc = new Command("pc", "Inspect and change settings on this PC");
         var sandbox = new Command("sandbox", "Get or switch the XBOX sandbox this PC uses");
         sandbox.Subcommands.Add(CreateGetCommand(dependencies));
-        sandbox.Subcommands.Add(CreateSetCommand(dependencies));
+        sandbox.Subcommands.Add(CreateSetCommand(dependencies, clientFactory));
         sandbox.Subcommands.Add(CreateLaunchAppsCommand(dependencies));
         pc.Subcommands.Add(sandbox);
         return pc.Requires(CommandRequirement.Configuration).Calls(ServiceEndpoints.None);
@@ -88,12 +94,33 @@ internal static class PcCommandFactory
         return command;
     }
 
-    private static Command CreateSetCommand(PcSandboxDependencies dependencies)
+    private static Command CreateSetCommand(
+        PcSandboxDependencies dependencies,
+        Func<IConfiguration, XboxPartnerClient>? clientFactory)
     {
         var sandboxArgument = new Argument<string>("sandbox-id")
         {
-            Description = "Sandbox to switch this PC to, such as ABCDEF.1, or RETAIL to switch back.",
+            Description = "Sandbox to switch this PC to, such as ABCDEF.1, or RETAIL to switch back. " +
+                "A sandbox number, such as 1, selects that sandbox in the seller's account.",
         };
+        sandboxArgument.Validators.Add(result =>
+        {
+            if (result.Tokens.Count > 0
+                && XboxSandboxId.IsNumber(result.Tokens[0].Value)
+                && !XboxSandboxId.TryNormalizeNumber(result.Tokens[0].Value, out _))
+            {
+                result.AddError(
+                    $"Invalid sandbox number '{result.Tokens[0].Value}'. {XboxSandboxId.NumberFormatDescription}");
+            }
+        });
+        // Reads the token, not the value, because context resolution asks before parse errors are reported.
+        bool IsNumber(ParseResult parseResult) =>
+            XboxSandboxId.IsNumber(parseResult.GetResult(sandboxArgument)?.Tokens.FirstOrDefault()?.Value);
+
+        // Only a number needs the seller, sign-in, and the service; a sandbox ID goes straight to the tool.
+        var seller = XboxPartnerCommandSupport.CreateSellerIdOption()
+            .AsContextValue(ContextEndpoint.XboxPartner, IsNumber);
+        seller.Description = "Partner Center seller whose sandbox a sandbox number selects. Not used with a sandbox ID.";
         var confirm = new Option<bool>("--confirm", "--yes", "-y")
         {
             Description = "Confirm switching this PC's sandbox without prompting.",
@@ -105,9 +132,12 @@ internal static class PcCommandFactory
         var command = new Command("set", "Switch this PC to an XBOX sandbox")
         {
             sandboxArgument,
+            seller,
             confirm,
             noApps,
         };
+        command.RequiresWhen(IsNumber, CommandRequirement.Authentication)
+            .CallsWhen(IsNumber, ServiceEndpoints.XboxPartner);
         command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.MachineState,
             Scope: "This PC, for every user and game. Windows only.",
@@ -120,13 +150,17 @@ internal static class PcCommandFactory
             Examples:
             [
                 "xbox pc sandbox set ABCDEF.1 --confirm",
+                "xbox pc sandbox set 1 --seller-id 1234567 --confirm",
                 "xbox pc sandbox set RETAIL --confirm",
                 "xbox pc sandbox set ABCDEF.1 --confirm --no-apps",
             ],
             LearnMore:
             [
-                $"Same as '{PcSandbox.ToolFileName} /set <sandbox-id>', or '/retail' for RETAIL.",
+                $"Same as '{PcSandbox.ToolFileName} /set <sandbox-id>', or '/retail' for RETAIL. " +
+                    "A sandbox number is resolved to its sandbox ID first.",
                 ToolLocationNote,
+                "A sandbox number from 0 to 999, without a leading zero, is joined to the seller's " +
+                    "account moniker, such as ABCDEF.1 for 1. Only a number needs sign-in and a seller.",
                 "Always switches, even to the current sandbox. Rerun it if sign-in uses the old sandbox.",
                 "Switch to RETAIL to update the XBOX app or Gaming Services from the Microsoft Store.",
                 $"Troubleshooting: {PcSandbox.TroubleshootingUrl}",
@@ -143,9 +177,37 @@ internal static class PcCommandFactory
                 confirmed,
                 parseResult.GetValue(noApps),
                 dependencies,
+                number => ResolveNumberAsync(parseResult, number, seller, clientFactory, cancellationToken),
                 cancellationToken);
         });
         return command;
+    }
+
+    /// <summary>
+    /// Joins a sandbox number to the seller's account moniker, as <c>sandbox get</c> does, or
+    /// explains why it couldn't and returns <see langword="null"/>. Writes the sandbox ID, since
+    /// the command changes the PC.
+    /// </summary>
+    private static async Task<string?> ResolveNumberAsync(
+        ParseResult parseResult,
+        string number,
+        Option<string?> sellerOption,
+        Func<IConfiguration, XboxPartnerClient>? clientFactory,
+        CancellationToken cancellationToken)
+    {
+        string? id = null;
+        await SandboxCommandFactory.ExecuteAsync(
+            parseResult, sellerOption, baseUrlOption: null, clientFactory,
+            async (client, baseUrl, sellerId) =>
+            {
+                id = await SandboxCommandFactory.ResolveSandboxIdAsync(
+                    parseResult, number, forCreate: false, changes: true, client, baseUrl, sellerId, cancellationToken);
+                return id is null ? 1 : 0;
+            },
+            cancellationToken,
+            offline: $"Or pass the full sandbox ID, such as ABCDEF.{number}, which needs no sign-in or seller.")
+            .ConfigureAwait(false);
+        return id;
     }
 
     private static Command CreateLaunchAppsCommand(PcSandboxDependencies dependencies)
@@ -213,6 +275,7 @@ internal static class PcCommandFactory
         bool confirmed,
         bool noApps,
         PcSandboxDependencies dependencies,
+        Func<string, Task<string?>> resolveNumber,
         CancellationToken cancellationToken)
     {
         if (!EnsureWindows(dependencies))
@@ -220,8 +283,9 @@ internal static class PcCommandFactory
             return 1;
         }
 
+        var isNumber = XboxSandboxId.TryNormalizeNumber(requested, out var number);
         var target = requested.Trim().ToUpperInvariant();
-        if (!PcSandbox.IsPlausibleSandboxId(target))
+        if (!isNumber && !PcSandbox.IsPlausibleSandboxId(target))
         {
             Console.Error.WriteLine(
                 $"'{requested}' is not a valid sandbox ID. Use an ID such as ABCDEF.1, or RETAIL.");
@@ -230,15 +294,26 @@ internal static class PcCommandFactory
 
         try
         {
+            // The tool reads the current sandbox before it switches, so a missing tool or a broken
+            // Gaming Services fails here, before a number signs in, the confirmation, and the
+            // administrator prompt.
             var tool = LocateTool(parseResult, dependencies);
-
-            // The tool reads the current sandbox before it switches, so a broken Gaming Services
-            // fails here, before the confirmation and the administrator prompt.
             var previous = await ReadSandboxAsync(parseResult, tool, dependencies, cancellationToken)
                 .ConfigureAwait(false);
             if (previous is null)
             {
                 return 1;
+            }
+
+            // The resolver reports its own failures, so none reach the local-failure catch below.
+            if (isNumber)
+            {
+                if (await resolveNumber(number).ConfigureAwait(false) is not { } resolved)
+                {
+                    return 1;
+                }
+
+                target = resolved;
             }
 
             var again = string.Equals(previous, target, StringComparison.OrdinalIgnoreCase);

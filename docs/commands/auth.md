@@ -77,9 +77,21 @@ xbox auth status --output json-compact
 In a service-principal mode, `auth status` gets an app-only token and reports its claims. It
 never prints the token.
 
+In bash or zsh:
+
 ```bash
 XBOX_AUTHENTICATION__MODE=azurecli xbox auth status --output json
 ```
+
+In PowerShell:
+
+```powershell
+$env:XBOX_AUTHENTICATION__MODE = "azurecli"
+xbox auth status --output json
+Remove-Item Env:XBOX_AUTHENTICATION__MODE
+```
+
+Either way, the output looks like this:
 
 ```json
 {

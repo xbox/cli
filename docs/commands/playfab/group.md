@@ -17,6 +17,12 @@ title_player_account`. For a player, pass their title player account ID, not the
 player account ID; [`playfab player account get`](player.md) returns it as
 `UserInfo.TitleInfo.TitlePlayerAccount.Id`.
 
+PlayFab runs these commands as the title, which can act for any player. `member add` adds a
+player without an invitation or application, and `invite accept` and `application apply` act
+for the player named by `--entity-id`. Commands whose `--entity-id` is optional act for the
+title itself when you omit it. See
+[How PlayFab authentication works](../../authentication.md#how-playfab-authentication-works).
+
 `group delete` and `group role delete` ask first in a terminal, and need `--confirm`
 elsewhere. Other commands that change a group, including `group member remove`, run
 without asking. See [Safety and destructive operations](../../safety.md).
@@ -65,7 +71,7 @@ to the group, PlayFab accepts the application instead of sending an invitation.
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
 | `playfab group application apply` | `/Group/ApplyToGroup` | `--group-id` required; optional applicant `--entity-id`, `--entity-type`, `--auto-accept`. |
-| `playfab group application accept` | `/Group/AcceptGroupApplication` | `--group-id` required; optional applicant `--entity-id`, `--entity-type`. |
+| `playfab group application accept` | `/Group/AcceptGroupApplication` | `--group-id`, `--entity-id`, and `--entity-type` required. |
 | `playfab group application remove` | `/Group/RemoveGroupApplication` | `--group-id`, `--entity-id`, and `--entity-type` required. |
 | `playfab group application list` | `/Group/ListGroupApplications` | `--group-id` required. |
 
@@ -84,8 +90,8 @@ invited the entity, PlayFab accepts the invitation instead of creating an applic
 
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
-| `playfab group membership list` | `/Group/ListMembership` | Optional `--entity-id`, `--entity-type`; omit both to target the calling entity. |
-| `playfab group membership opportunity list` | `/Group/ListMembershipOpportunities` | Optional `--entity-id`, `--entity-type`; omit both to target the calling entity. |
+| `playfab group membership list` | `/Group/ListMembership` | Optional `--entity-id`, `--entity-type`; omit both to target the title. |
+| `playfab group membership opportunity list` | `/Group/ListMembershipOpportunities` | Optional `--entity-id`, `--entity-type`; omit both to target the title. |
 
 ## Table output
 

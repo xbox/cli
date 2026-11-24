@@ -15,7 +15,7 @@ On Windows, install the CLI with [WinGet](https://learn.microsoft.com/windows/pa
 the Windows Package Manager:
 
 ```powershell
-winget install xbox
+winget install XBOX.cli
 xbox --version
 ```
 
@@ -26,13 +26,13 @@ terminal.
 To update the CLI:
 
 ```powershell
-winget upgrade Microsoft.Gaming.XBOXDeveloperCLI
+winget upgrade XBOX.cli
 ```
 
 To remove it:
 
 ```powershell
-winget uninstall Microsoft.Gaming.XBOXDeveloperCLI
+winget uninstall XBOX.cli
 ```
 
 Uninstalling leaves your saved settings and sign-in data in `%LOCALAPPDATA%\XboxDevCLI`. Update a
@@ -137,7 +137,7 @@ If it shows an older version, another copy of `xbox` comes first on your `PATH`.
 xbox upgrade
 ```
 
-To update a WinGet installation, run `winget upgrade Microsoft.Gaming.XBOXDeveloperCLI`. To
+To update a WinGet installation, run `winget upgrade XBOX.cli`. To
 update a script installation, run the [install script](#linux-and-macos-install-with-a-script)
 again. To update a ZIP installation, follow the next section.
 
@@ -163,4 +163,6 @@ run `xbox auth login` again.
 - [Getting started](getting-started.md): sign in, choose your Partner Center seller, and list its
   games.
 - [Commands](commands.md): the full command reference.
+- [Completion](commands/completion.md#enable-completion): complete commands and options when you
+  press Tab.
 - [Telemetry](telemetry.md): what the CLI collects, and how to turn it off.

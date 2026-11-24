@@ -22,18 +22,6 @@ public class ExperimentCommandTests
     #region Command structure
 
     [Fact]
-    public void Experiment_HasAllSubcommands()
-    {
-        var experiment = ExperimentCommandFactory.Create();
-
-        Assert.Equal("experiment", experiment.Name);
-        foreach (var name in new[] { "list", "scorecard", "treatment", "exclusion-group" })
-        {
-            Assert.Contains(experiment.Subcommands, c => c.Name == name);
-        }
-    }
-
-    [Fact]
     public void Experiment_Options()
     {
         var experiment = ExperimentCommandFactory.Create();
@@ -80,6 +68,8 @@ public class ExperimentCommandTests
         Assert.Equal(string.Empty, stderr.ToString());
     }
 
+    // The compact, data-only and API-error tests below stand for every command that ends in
+    // PlayFabCommandHelper.RunAsync, so other command tests don't repeat them.
     [Fact]
     public async Task RunListAsync_JsonCompact_EmitsSingleLine()
     {
@@ -147,23 +137,6 @@ public class ExperimentCommandTests
         Assert.Contains("Scorecard", stdout.ToString());
     }
 
-    [Fact]
-    public async Task RunScorecardAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad id"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await ExperimentCommandFactory.RunScorecardAsync(client, "missing", OutputOptions.Json, stdout, stderr, CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.Contains("InvalidParams", stderr.ToString());
-    }
-
     #endregion
 
     #region treatment
@@ -188,25 +161,6 @@ public class ExperimentCommandTests
         Assert.Contains("TreatmentAssignment", stdout.ToString());
     }
 
-    [Fact]
-    public async Task RunTreatmentAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad entity"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await ExperimentCommandFactory.RunTreatmentAsync(
-            client, "E1", "title", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.Contains("InvalidParams", stderr.ToString());
-    }
-
     #endregion
 
     #region exclusion-groups
@@ -227,23 +181,6 @@ public class ExperimentCommandTests
         Assert.Empty(doc.RootElement.EnumerateObject());
         Assert.Contains("ExclusionGroups", stdout.ToString());
         Assert.Equal(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunExclusionGroupsAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":403,"status":"Forbidden","error":"NotAuthorized","errorCode":1074,"errorMessage":"denied"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await ExperimentCommandFactory.RunExclusionGroupsAsync(client, OutputOptions.Json, stdout, stderr, CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.Contains("NotAuthorized", stderr.ToString());
     }
 
     #endregion

@@ -25,6 +25,7 @@ See [Experimental commands](cli-command-lifecycle.md).
 | [`audience`](commands/audience.md) | List, get, create, and update a seller's audiences (Experimental). |
 | [`package`](commands/package.md) | List and get game packages (Experimental). |
 | [`playtest`](commands/playtest.md) | List, get, diff, create, update, publish, and delete the playtests of a game. |
+| [`store-listing`](commands/store-listing.md) | Get a game's Store listing text in one language (Experimental). |
 | [`pc`](commands/pc.md) | Get or switch the XBOX sandbox this Windows PC uses (Experimental). |
 | [`test-account`](commands/test-account.md) | Create, update, and delete XBOX test account batches, follow their creation jobs, read batches, and look up an account's batch and whether its access expired. |
 | [`playfab`](commands/playfab.md) | Inspect and manage PlayFab services. |
@@ -37,6 +38,7 @@ See [Experimental commands](cli-command-lifecycle.md).
 | [`info`](commands/info.md) | Show version and getting-started links. |
 | [`upgrade`](commands/upgrade.md) | Check for a newer CLI release and show manual update instructions. |
 | [`feedback`](commands/feedback.md) | Open a bug-report draft with CLI environment information. |
+| [`completion`](commands/completion.md) | Print a shell completion script. |
 | [`help`](commands/help.md) | Show help for any command. |
 
 ## Global options
@@ -109,8 +111,8 @@ own, such as `3` when a change's outcome is unknown, and their pages list them.
 | `130` | You pressed Ctrl+C while the command was reading or waiting. |
 
 A failed PlayFab call writes the error JSON to stderr in the `--output` format; see
-[PlayFab error responses](playfab-api.md#error-responses). An unknown command writes an error
-and usage to stderr; see [Help](commands/help.md).
+[PlayFab error responses](playfab-api.md#error-responses). A usage error, such as an unknown
+command or option, writes the error and usage to stderr; see [Help](commands/help.md).
 
 If you press Ctrl+C after a command sent a change, it says on stderr whether the change might
 have been made. It exits with the code its page documents, or `1` for a PlayFab command. Check

@@ -7,7 +7,7 @@
     <Product>$(CliProductName)</Product>
     <PackageId>$(CliProductName)</PackageId>
     <RootNamespace>XboxDevCLI</RootNamespace>
-    <Version>0.4.0</Version>
+    <Version>0.5.0</Version>
     <!-- Generated so the compiler checks doc comments, such as their crefs. Nothing reads it at
          runtime, so it isn't published. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -41,6 +41,10 @@
     <!-- The built-in settings. The CLI reads no settings file, so it runs from a symlink, a
          package manager's shim, or a lone copy of the executable. -->
     <EmbeddedResource Include="Resources\defaults.json" />
+    <!-- Printed by 'xbox completion <shell>'. -->
+    <EmbeddedResource Include="Resources\Completion\*" />
+    <!-- The feature each XBOX services configuration document configures, for config status. -->
+    <EmbeddedResource Include="Resources\xbl-feature-names.json" />
   </ItemGroup>
 
   <ItemGroup>

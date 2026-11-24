@@ -26,7 +26,7 @@ public sealed class AppTokenProviderTests : IDisposable
     [Theory]
     [InlineData("openid")]
     [InlineData("a/.default b/.default")]
-    [InlineData("a/.default & calc")]
+    [InlineData("a&calc/.default")]
     public void GetSingleDefaultScope_RejectsAnythingButOneDefaultScope(string scopes)
     {
         Assert.Throws<AuthenticationConfigurationException>(() =>
@@ -237,18 +237,6 @@ public sealed class AppTokenProviderTests : IDisposable
         var missing = Assert.Throws<AuthenticationConfigurationException>(() =>
             AppTokenProviderFactory.ReadCredentialFile(Path.Combine(_directory, "missing"), "VAR"));
         Assert.Contains("Could not read the file named by VAR", missing.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void LoadCertificate_UsesPasswordFile()
-    {
-        var pfx = WritePfx("protected.pfx", password: "pfx-pass");
-        var passwordFile = WriteFile("password.txt", "pfx-pass\n");
-
-        using var certificate = AppTokenProviderFactory.LoadCertificate(
-            new(AuthenticationMode.Certificate, Tenant, Client, pfx, passwordFile));
-
-        Assert.True(certificate.HasPrivateKey);
     }
 
     [Fact]

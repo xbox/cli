@@ -20,7 +20,7 @@ pass `--seller-id`.
 | --- | --- |
 | `test-account batch list` | List the seller's test account batches, newest first. |
 | `test-account batch get <batch-id>` | Show one batch and its accounts. |
-| `test-account get <email>` | Find the batch that holds an account and report whether its access expired. See [Looking up an account](#looking-up-an-account). |
+| `test-account get <email-or-xuid>` | Find the batch that holds an account, by its email or its XBOX user ID (XUID), and report whether its access expired. See [Looking up an account](#looking-up-an-account). |
 | `test-account batch create` | Create a batch of test accounts and wait for its creation job. See [Creating a batch](#creating-a-batch). |
 | `test-account batch update <batch-id>` | Change a batch's sandboxes, sandbox access expiry, or tags, and wait until the batch shows them. See [Updating a batch](#updating-a-batch). |
 | `test-account batch delete <batch-id>` | Delete a batch and wait until it's gone. See [Deleting a batch](#deleting-a-batch). |
@@ -56,10 +56,6 @@ batches you created.
 A batch is expired once its `accessExpirationDate`, the date its sandbox access ends, has
 passed. A batch with no date never expires. Expiry doesn't say whether the accounts can still
 sign in.
-
-`batch list --expired` reads the seller's whole list to find the expired batches, so it's
-slower for a seller with many batches. It can't be combined with `--include-sandboxes`; run
-`batch get` on an expired batch to see its sandbox access.
 
 ## Response shape
 
@@ -120,7 +116,7 @@ Each account has only `xuid`, `email`, `gamertag`, and `isDeleted`. `xuid` is a 
 `batch list`, `batch get`, and `test-account get` exit 1 on failure. When the service returns
 a JSON error, stderr gets a JSON error with `status`, `title`, `detail`, `code` when the
 response includes one, and its `correlationId`; most add a hint to `detail`. Other failures
-print a line of text. Check the exit code before parsing stderr.
+print a line of text, after an `x-ms-correlation-id` line when the request was sent.
 
 | Status | Meaning |
 | --- | --- |
@@ -128,20 +124,29 @@ print a line of text. Check the exit code before parsing stderr.
 | 403 | You aren't a member of this seller, or lack the Partner Center test account role for it. For `batch get`, the batch might belong to another seller (pass `--seller-id`), or another developer created it and you can't read every batch for the seller. If the error asks you to sign in again, do that. |
 | 404 | No batch with that ID exists, or test accounts aren't available yet. |
 | 429 | With code `rate_limited`, you sent too many requests in a short time. The error includes `retryAfterSeconds`; see [Rate limits](../cli-for-agents.md#rate-limits). |
-| 502 | The service couldn't complete the request; retry. The service can return 502 rather than 403 when you lack the test account role or, for `batch get`, when another developer created the batch. With a personal Microsoft account, retrying doesn't help; see [Known issues](../known-issues.md#some-commands-dont-work-yet-with-a-personal-microsoft-account). |
+| 502 | The service couldn't complete the request; retry. If it fails again, you might lack the test account role, or, for `batch get`, another developer might have created the batch: the service can return 502 rather than 403 for those. |
 | 503 | Test accounts aren't available. |
 | 504 | The service didn't answer in time; retry. |
 
 ## Looking up an account
 
-`test-account get <email>` says whether the batch holding an account has expired. The email
-must end with `@xboxtest.com`. The command searches the newest 10 batches whose email
-template matches the account's name. When it doesn't find the account there, it says older
-batches weren't searched and prints `batch list` and `batch get` commands to check them
-yourself.
+`test-account get` finds the batch that holds an account and says whether its access has
+expired. Pass the account's email, which must end with `@xboxtest.com`, or its XUID.
 
-It returns the following, shortened here; `batch` holds every batch field that `batch list`
-returns:
+To look up by email, pass the account's email:
+
+```bash
+xbox test-account get ABCD-tester00007@xboxtest.com
+```
+
+To look up by XUID, pass the XUID:
+
+```bash
+xbox test-account get 2814600000000001
+```
+
+Either way, it returns the following, shortened here; `batch` holds every batch field that
+`batch list` returns:
 
 ```json
 {
@@ -153,13 +158,17 @@ returns:
 ```
 
 `expiredOn` is `null` when the batch hasn't expired. A deleted account is reported only when no
-live copy exists, with `account.isDeleted` set. The command exits 0 whenever it finds the
-account, expired or not, so scripts should read `expired`. It exits 1 when:
+live copy exists, with `account.isDeleted` set. When more than 10 batches could hold the
+account, the command reads only the newest 10.
+
+The command exits 0 whenever it finds the account, expired or not. It exits 1 when:
 
 - The account isn't in the batches you can see. It might belong to another seller, so try
   `--seller-id`, or another developer created its batch and you can't read every batch for
   the seller.
-- The email appears in more than one batch. stderr lists a `batch get` command for each.
+- The email or XUID appears in more than one batch. stderr lists a `batch get` command for each.
+- The account isn't in the newest 10 batches that could hold it. stderr says the older batches
+  weren't searched and prints `batch list` and `batch get` commands to check them.
 - A request fails, as in [Errors when reading batches](#errors-when-reading-batches).
 
 ## Creating a batch
@@ -181,8 +190,8 @@ Without a terminal, pass `--password-file`, `--security-answer-file`, and `--con
 | `--email-prefix <text>` | Required. The sandbox group, a hyphen, and a template, for example `ABCD-tester`. The sandbox group is the part of a sandbox ID before the dot, such as `ABCD` in `ABCD.1`. |
 | `--count <count>` | Required. Number of accounts to create; at least 1. The service sets the maximum. |
 | `--sandbox-id <id>` | Required. A sandbox the accounts can access. Repeat for more sandboxes. |
-| `--password-file <path>` | File holding the account password, or `-` for stdin. See [Secrets](#secrets). |
-| `--security-answer-file <path>` | File holding the security answer, or `-` for stdin. See [Secrets](#secrets). |
+| `--password-file <path>` | File holding the account password, or `-` for piped stdin. See [Secrets](#secrets). |
+| `--security-answer-file <path>` | File holding the security answer, or `-` for piped stdin. See [Secrets](#secrets). |
 | `--child-count <count>` | Total child accounts in the batch, all linked to the first account; 0 or more. `--count 5 --child-count 2` creates 5 accounts and 2 children, not 2 for each. The service sets the maximum. |
 | `--first-name <text>` | Defaults to `Test`. |
 | `--last-name <text>` | Defaults to `Account`. |
@@ -222,7 +231,7 @@ The password and security answer are never accepted as option values or environm
 variables, so they stay out of shell history, process listings, and logs. Each comes from:
 
 - Its `--password-file` or `--security-answer-file`. A single trailing line break is removed.
-- `-` in place of a path, which reads it from stdin. Only one of the two can read stdin.
+- `-` in place of a path, which reads it from piped stdin. Only one of the two can read stdin.
 - With no file option, a prompt in the terminal that doesn't echo what you type.
 
 The password must be 8 to 16 characters and contain at least three of: lowercase letters,
@@ -246,7 +255,9 @@ the same shape as [`job get`](#following-a-creation-job).
 
 When the CLI can't tell whether the service created a batch, such as when the connection drops
 after the request is sent or the service returns a `5xx` error, it exits 3. It never sends the
-create again. stderr prints the time the request started, in UTC, and these steps:
+create again. stderr prints the request's correlation ID, as an `x-ms-correlation-id` line or the
+JSON error's `correlationId`. It also prints the time the request
+started, in UTC, and these steps:
 
 1. Wait a few minutes; a batch still being created might not be listed yet.
 2. Run `xbox test-account batch list --mine --email-prefix <prefix>` and look for a batch with
@@ -262,7 +273,7 @@ them as they are.
 ### Errors when creating
 
 Failures write a JSON error to stderr with `status`, `title`, `detail`, and `code` when the
-response includes one. Branch on `code`, not on `detail`.
+response includes one. The wording of `detail` might change.
 
 | Code | Meaning |
 | --- | --- |
@@ -487,7 +498,7 @@ stderr, so stdout holds only the table.
 | --- | --- |
 | `test-account batch list` | `BATCH ID`, `EMAIL TEMPLATE`, `SIZE`, `STATE` (`complete` or `pending`), `CREATED BY`, `CREATED (UTC)`, `EXPIRES (UTC)`, then `SANDBOXES` with `--include-sandboxes`. |
 | `test-account batch get` | One row per account: `EMAIL`, `GAMERTAG`, `XUID`, and `DELETED`. stderr summarizes the batch and its sandbox access. |
-| `test-account get` | One row: `EMAIL`, `GAMERTAG`, `BATCH ID`, `EMAIL TEMPLATE`, `EXPIRES (UTC)`, and `EXPIRED` (`yes` or `no`). |
+| `test-account get` | One row: `GAMERTAG`, `XUID`, `BATCH ID`, `EMAIL TEMPLATE`, `EXPIRES (UTC)`, and `EXPIRED` (`yes` or `no`). |
 | `test-account batch create`, `job get`, `job wait` | One row: `BATCH ID`, `JOB ID`, `STATE` (`running`, `succeeded`, or `failed`), `TOTAL`, `SUCCEEDED`, `FAILED`. |
 | `test-account batch update` | One row: `BATCH ID`, `JOB ID`, `STATE` (`updated`, `updating`, or `unchanged`), `EXPIRES (UTC)`. stderr lists the sandboxes and keywords. |
 | `test-account batch delete` | One row: `BATCH ID`, `JOB ID`, `STATE` (`deleted` or `deleting`), `EMAIL TEMPLATE`, `SIZE`. |
@@ -525,9 +536,7 @@ Create a batch unattended, with the secrets read from files, no prompt, and a wa
 30 minutes:
 
 ```bash
-xbox test-account batch create --email-prefix ABCD-smoke --count 2 --sandbox-id ABCD.1 \
-  --password-file ./password.txt --security-answer-file ./answer.txt \
-  --subscription Silver --tag smoke --timeout 30m --confirm
+xbox test-account batch create --email-prefix ABCD-smoke --count 2 --sandbox-id ABCD.1 --password-file ./password.txt --security-answer-file ./answer.txt --subscription Silver --tag smoke --timeout 30m --confirm
 ```
 
 Wait up to two hours for a create job to finish:

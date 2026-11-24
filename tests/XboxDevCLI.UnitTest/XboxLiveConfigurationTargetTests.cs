@@ -33,6 +33,8 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
 
         Directory.CreateDirectory(_directory);
         File.WriteAllText(Path.Combine(_directory, "nsal.xml"), "<ServiceNsal />");
+        File.WriteAllText(Path.Combine(_directory, "presence.xml"), "<ServiceNsal />");
+        File.WriteAllText(Path.Combine(_directory, "relyingparty.xml"), "<RelyingParty />");
         ContextStore.DefaultDirectory = () => Path.Combine(_directory, "state");
         ContextResolver.ReadIdentityAsync = _ => Task.FromResult<SignedInIdentity?>(Identity);
     }
@@ -215,13 +217,17 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         var result = await InvokeAsync(handler, [.. Arguments("config", "status"),
             "--title-id", "42", "--output", format]);
         Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Contains("Pending", result.Stdout);
         Assert.DoesNotContain("resolvedTitleId", result.Stdout);
         Assert.DoesNotContain("primary title", result.Stdout);
         if (format != "table")
         {
             using var body = JsonDocument.Parse(result.Stdout);
             Assert.Equal("Pending", body.RootElement.GetProperty("lastPublish").GetProperty("status").GetString());
+            Assert.Equal(Scid, body.RootElement.GetProperty("scid").GetString());
+        }
+        else
+        {
+            Assert.Contains("Last publish: Pending.", result.Stderr);
         }
     }
 
@@ -327,45 +333,49 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
     public async Task ConfigurationList_LaterPagesKeepFirstPageTargetWithoutMetadata()
     {
         var handler = new XboxPartnerHttpMessageHandler(
-            Target(Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}""")),
+            [Target(Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}""")),
             Ok("""{"configurations":[{"sandbox":"TESTSB.42"}],"continuationToken":"third"}"""),
-            Ok("""{"configurations":[{"sandbox":"RETAIL"}]}"""));
+            Ok("""{"configurations":[{"sandbox":"RETAIL"}]}"""),
+            .. StatusReads(3), Ok(FollowUp)]);
 
         var result = await InvokeAsync(handler, [.. Arguments("config", "list"), "--title-id", "42"]);
 
         Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Equal(3, handler.Requests.Count);
-        AssertOperationTarget(handler.Requests[1], sandbox: false);
-        AssertOperationTarget(handler.Requests[2], sandbox: false);
+        CapturedHttpRequest[] pages = Pages(handler);
+        Assert.Equal(3, pages.Length);
+        AssertOperationTarget(pages[1], sandbox: false);
+        AssertOperationTarget(pages[2], sandbox: false);
         using var output = JsonDocument.Parse(result.Stdout);
-        Assert.Equal(3, output.RootElement.GetArrayLength());
+        Assert.Equal(5, output.RootElement.GetArrayLength());
     }
 
     [Fact]
     public async Task ConfigurationList_FirstPageSendsTitleThenPinsScidAndActualSeller()
     {
         var handler = new XboxPartnerHttpMessageHandler(
-            Target(Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}"""), bound: true),
-            ScidTarget(Ok("""{"configurations":[{"sandbox":"TESTSB.42"}]}""")));
+            [Target(Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}"""), bound: true),
+            ScidTarget(Ok("""{"configurations":[{"sandbox":"TESTSB.42"}]}""")),
+            .. StatusReads(2), Ok(FollowUp)]);
 
         var result = await InvokeAsync(handler, [.. Arguments("config", "list"), "--title-id", "42"]);
 
         Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Equal(2, handler.Requests.Count);
-        AssertTitleOperation(handler.Requests[0], "config", "list", "00000042", null);
-        AssertOperationTarget(handler.Requests[1], sandbox: false);
-        using var first = JsonDocument.Parse(handler.Requests[0].Body!);
+        CapturedHttpRequest[] pages = Pages(handler);
+        Assert.Equal(2, pages.Length);
+        AssertTitleOperation(pages[0], "config", "list", "00000042", null);
+        AssertOperationTarget(pages[1], sandbox: false);
+        using var first = JsonDocument.Parse(pages[0].Body!);
         Assert.Equal(XboxPartnerClient.ListPageSize, first.RootElement.GetProperty("pageSize").GetInt32());
         Assert.False(first.RootElement.TryGetProperty("continuationToken", out var firstToken)
             && firstToken.ValueKind != JsonValueKind.Null);
-        using var second = JsonDocument.Parse(handler.Requests[1].Body!);
+        using var second = JsonDocument.Parse(pages[1].Body!);
         AssertNullOrAbsent(second.RootElement, "titleId");
         AssertNullOrAbsent(second.RootElement, "pageSize");
         Assert.Equal("next", second.RootElement.GetProperty("continuationToken").GetString());
-        Assert.Equal(Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]),
-            Assert.Single(handler.Requests[1].Headers["x-ms-correlation-id"]));
+        Assert.Equal(Assert.Single(pages[0].Headers["x-ms-correlation-id"]),
+            Assert.Single(pages[1].Headers["x-ms-correlation-id"]));
         using var output = JsonDocument.Parse(result.Stdout);
-        Assert.Equal(2, output.RootElement.GetArrayLength());
+        Assert.Equal(4, output.RootElement.GetArrayLength());
     }
 
     [Fact]
@@ -408,25 +418,27 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
     {
         Environment.SetEnvironmentVariable("XBOX_TITLE_ID", "invalid");
         var handler = new XboxPartnerHttpMessageHandler(
-            Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}"""),
-            Operation("config", "list"));
+            [Ok("""{"configurations":[{"sandbox":"XDKS.1"}],"continuationToken":"next"}"""),
+            Operation("config", "list"),
+            .. StatusReads(1), Ok(FollowUp)]);
 
         var result = await InvokeAsync(handler, [.. Arguments("config", "list"), "--scid", Scid]);
 
         Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Equal(2, handler.Requests.Count);
-        foreach (var request in handler.Requests)
+        CapturedHttpRequest[] pages = Pages(handler);
+        Assert.Equal(2, pages.Length);
+        foreach (var request in pages)
         {
             using var body = JsonDocument.Parse(request.Body!);
             Assert.Equal(Scid, body.RootElement.GetProperty("scid").GetString());
             AssertNullOrAbsent(body.RootElement, "titleId");
         }
-        using var second = JsonDocument.Parse(handler.Requests[1].Body!);
+        using var second = JsonDocument.Parse(pages[1].Body!);
         Assert.Equal("next", second.RootElement.GetProperty("continuationToken").GetString());
-        Assert.Equal(Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]),
-            Assert.Single(handler.Requests[1].Headers["x-ms-correlation-id"]));
+        Assert.Equal(Assert.Single(pages[0].Headers["x-ms-correlation-id"]),
+            Assert.Single(pages[1].Headers["x-ms-correlation-id"]));
         using var output = JsonDocument.Parse(result.Stdout);
-        Assert.Equal(2, output.RootElement.GetArrayLength());
+        Assert.Equal(3, output.RootElement.GetArrayLength());
     }
 
     [Theory]
@@ -468,7 +480,7 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
 
         var result = await InvokeAsync(handler, [.. Arguments("config", "save"), "--title-id", "42"]);
 
-        Assert.Equal(CommitDocumentsCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Equal("\"saved\"", await File.ReadAllTextAsync(etagPath));
@@ -519,8 +531,12 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         var args = Arguments("config", action).ToList();
         int sandbox = args.IndexOf("--sandbox-id");
         args.RemoveRange(sandbox, 2);
+        if (args.IndexOf("--file") is var file and >= 0)
+        {
+            args[file + 1] = Path.Combine(_directory, "relyingparty.xml");
+        }
 
-        var result = await InvokeAsync(handler, [.. args, "--type", "ACCOUNT"]);
+        var result = await InvokeAsync(handler, [.. args, "--scope", "account"]);
 
         Assert.True(result.ExitCode == 0, result.Stderr);
         var request = Assert.Single(handler.Requests);
@@ -539,11 +555,11 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         var args = Arguments("config", action).ToList();
         args.RemoveRange(args.IndexOf("--sandbox-id"), 2);
         var handler = new XboxPartnerHttpMessageHandler(Ok("{}"));
-        var result = await InvokeAsync(handler, [.. args, "--type", "account", "--title-id", "42"]);
+        var result = await InvokeAsync(handler, [.. args, "--scope", "account", "--title-id", "42"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(handler.Requests);
-        Assert.Contains("--title-id cannot be used with account", result.Stderr);
+        Assert.Contains("--scope account uses the seller account's configuration, so it takes no --title-id.", result.Stderr);
     }
 
     [Theory]
@@ -555,11 +571,30 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         args.RemoveRange(args.IndexOf("--sandbox-id"), 2);
         var handler = new XboxPartnerHttpMessageHandler(Operation("config", action));
 
-        var result = await InvokeAsync(handler, [.. args, "--type", "account", "--scid", Scid]);
+        var result = await InvokeAsync(handler, [.. args, "--scope", "account", "--scid", Scid]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(handler.Requests);
         Assert.Contains("--scid", result.Stderr);
+    }
+
+    [Fact]
+    public async Task TitleScopeStatus_ReadsTheTitleScopeAndTheLastPublishFromHidden()
+    {
+        var handler = new XboxPartnerHttpMessageHandler(Ok(FollowUp), Ok(FollowUp));
+
+        var result = await InvokeAsync(
+            handler, ["xbl", "config", "status", "--scid", Scid, "--seller-id", "1234567", "--scope", "title"]);
+
+        Assert.True(result.ExitCode == 0, result.Stderr);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.EndsWith("/configurations/get", handler.Requests[0].RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        using var draft = JsonDocument.Parse(handler.Requests[0].Body!);
+        Assert.Equal("title", draft.RootElement.GetProperty("scope").GetString());
+        AssertNullOrAbsent(draft.RootElement, "sandbox");
+        Assert.EndsWith("/publish/status", handler.Requests[1].RequestUri!.AbsolutePath, StringComparison.Ordinal);
+        using var publish = JsonDocument.Parse(handler.Requests[1].Body!);
+        Assert.Equal("HIDDEN", publish.RootElement.GetProperty("sandbox").GetString());
     }
 
     [Fact]
@@ -778,12 +813,12 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         var handler = new XboxPartnerHttpMessageHandler(Ok("{}"));
 
         var result = await InvokeAsync(handler,
-            "xbl", "config", "save", "--type", "account", "--seller-id", "1234567",
+            "xbl", "config", "save", "--scope", "account", "--seller-id", "1234567",
             "--file", Path.Combine(_directory, "nsal.xml"), "--allow-shared-configuration");
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.Empty(handler.Requests);
-        Assert.Contains("--allow-shared-configuration cannot be used with account documents.", result.Stderr);
+        Assert.Contains("--allow-shared-configuration cannot be used with --scope account.", result.Stderr);
     }
 
     [Fact]
@@ -952,7 +987,7 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
     private static int WriteFailureExitCode(string family, string action) => (family, action) switch
     {
         ("config", "publish") => PublishCommandFactory.OutcomeUnknownExitCode,
-        ("config", "save") => CommitDocumentsCommandFactory.OutcomeUnknownExitCode,
+        ("config", "save") => XboxPartnerCommandSupport.OutcomeUnknownExitCode,
         _ => 1,
     };
 
@@ -965,7 +1000,7 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         List<string> args = ["xbl", family, action];
         if (action != "list") args.AddRange(["--sandbox-id", "XDKS.1"]);
         if (action == "download") args.AddRange(["--view", view, "--dest", _directory]);
-        if (action == "save") args.AddRange(["--file", Path.Combine(_directory, "nsal.xml")]);
+        if (action == "save") args.AddRange(["--file", Path.Combine(_directory, "presence.xml")]);
         return [.. args];
     }
 
@@ -1002,50 +1037,58 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
     }
 
     /// <summary>
-    /// A handler for one command. config status also reads the last publish, so it gets a second
-    /// response carrying the same target headers as the first.
+    /// A handler for one command. config status then reads the sandbox's last publish, the title
+    /// draft's version, and the sandbox's history, by the SCID the first response named; config list then reads its one sandbox's last publish, and the status of the title and the account.
     /// </summary>
-    private static XboxPartnerHttpMessageHandler Handler(string action, HttpResponseMessage response)
+    private static XboxPartnerHttpMessageHandler Handler(string action, HttpResponseMessage response) => action switch
     {
-        if (action != "status")
-        {
-            return new XboxPartnerHttpMessageHandler(response);
-        }
-
-        var lastPublish = Ok("""{"Status":"Pending"}""");
-        foreach (var header in response.Headers.Where(header => header.Key.StartsWith("X-XboxPartner-", StringComparison.Ordinal)))
-        {
-            lastPublish.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-
-        return new XboxPartnerHttpMessageHandler(response, lastPublish);
-    }
+        "status" => new XboxPartnerHttpMessageHandler(response, Ok(FollowUp), Ok(FollowUp), Ok(FollowUp)),
+        "list" => new XboxPartnerHttpMessageHandler([response, .. StatusReads(1), Ok(FollowUp)]),
+        _ => new XboxPartnerHttpMessageHandler(response),
+    };
 
     /// <summary>
-    /// The command's operation request. config status sends its last-publish read after it,
-    /// pinned to the SCID the first read resolved rather than looking the title up again.
+    /// The reads that follow config list's sandbox list: each sandbox's last publish, and the
+    /// title's status and last publish. The account's one read follows.
+    /// </summary>
+    private static HttpResponseMessage[] StatusReads(int sandboxes) =>
+        [.. Enumerable.Range(0, sandboxes + 2).Select(_ => Ok(FollowUp))];
+
+    /// <summary>
+    /// One answer to every read that follows the operation: an unchanged configuration, an empty
+    /// history, and a pending publish. config list reads several sets at once, so the order of
+    /// its status and publish reads isn't fixed.
+    /// </summary>
+    private const string FollowUp = """{"documents":[],"entries":[],"Status":"Pending"}""";
+
+    /// <summary>
+    /// The command's operation request. config status's and config list's later reads use the SCID
+    /// the operation resolved to, and never the title ID.
     /// </summary>
     private static CapturedHttpRequest OperationRequest(XboxPartnerHttpMessageHandler handler, string action)
     {
-        Assert.Equal(action == "status" ? 2 : 1, handler.Requests.Count);
-        if (action == "status")
+        Assert.Equal(action switch { "status" => 4, "list" => 5, _ => 1 }, handler.Requests.Count);
+        foreach (CapturedHttpRequest followUp in handler.Requests.Skip(1))
         {
-            Assert.EndsWith("/publish/status", handler.Requests[1].RequestUri!.AbsolutePath);
-            using var first = JsonDocument.Parse(handler.Requests[0].Body!);
-            using var second = JsonDocument.Parse(handler.Requests[1].Body!);
-            Assert.Equal(Scid, second.RootElement.GetProperty("scid").GetString());
-            AssertNullOrAbsent(second.RootElement, "titleId");
-            Assert.Equal(
-                first.RootElement.GetProperty("sandbox").GetString(),
-                second.RootElement.GetProperty("sandbox").GetString());
-            if (first.RootElement.TryGetProperty("sellerId", out var seller) && seller.ValueKind != JsonValueKind.Null)
+            Assert.True(
+                followUp.RequestUri!.AbsolutePath.EndsWith("/publish/status", StringComparison.Ordinal)
+                || followUp.RequestUri.AbsolutePath.EndsWith("/configurations/get", StringComparison.Ordinal)
+                || (action == "status" && followUp.RequestUri.AbsolutePath.EndsWith("/configurations/history", StringComparison.Ordinal)),
+                followUp.RequestUri.AbsolutePath);
+            using var body = JsonDocument.Parse(followUp.Body!);
+            AssertNullOrAbsent(body.RootElement, "titleId");
+            if (!(body.RootElement.TryGetProperty("scope", out var scope) && scope.GetString() == "account"))
             {
-                Assert.Equal(seller.GetInt64(), second.RootElement.GetProperty("sellerId").GetInt64());
+                Assert.Equal(Scid, body.RootElement.GetProperty("scid").GetString());
             }
         }
 
         return handler.Requests[0];
     }
+
+    /// <summary>config list's reads of the sandbox list, without its status reads.</summary>
+    private static CapturedHttpRequest[] Pages(XboxPartnerHttpMessageHandler handler) =>
+        [.. handler.Requests.Where(request => request.RequestUri!.AbsolutePath.EndsWith("/configurations", StringComparison.Ordinal))];
 
     private static HttpResponseMessage Ok(string json) => new(HttpStatusCode.OK) { Content = new StringContent(json) };
 
@@ -1087,7 +1130,7 @@ public sealed class XboxLiveConfigurationTargetTests : IDisposable
         return Ok(action switch
         {
             "list" => """{"configurations":[{"sandbox":"XDKS.1"}]}""",
-            "status" => """{"sandbox":"XDKS.1"}""",
+            "status" => """{"scope":"sandbox","sandbox":"XDKS.1","documents":[]}""",
             "save" => """{"ValidationInfo":[],"ETag":"\"etag\"","CanCommit":true,"Committed":true}""",
             _ => """{"status":"Pending"}""",
         });

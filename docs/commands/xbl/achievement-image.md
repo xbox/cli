@@ -33,34 +33,24 @@ images registered for it. `--scid` takes the title's service configuration ident
 Upload an image:
 
 ```bash
-xbox xbl achievement-image upload \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --file achievement-1920x1080.png
+xbox xbl achievement-image upload --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --file achievement-1920x1080.png
 ```
 
 Pass the `assetId` that `upload` returns to verify the image, and to download it and its
 thumbnail into `achievement-images/<assetId>/`:
 
 ```bash
-xbox xbl achievement-image get \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --asset-id 11111111-2222-3333-4444-555555555555 --output json-compact
+xbox xbl achievement-image get --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --asset-id 11111111-2222-3333-4444-555555555555 --output json-compact
 
-xbox xbl achievement-image download \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --asset-id 11111111-2222-3333-4444-555555555555 --dest achievement-images
+xbox xbl achievement-image download --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --asset-id 11111111-2222-3333-4444-555555555555 --dest achievement-images
 ```
 
 List every image registered for the SCID, and download them all:
 
 ```bash
-xbox xbl achievement-image list \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --output table
+xbox xbl achievement-image list --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --output table
 
-xbox xbl achievement-image download \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --all --dest achievement-images --output table
+xbox xbl achievement-image download --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --all --dest achievement-images --output table
 ```
 
 ## Output
@@ -104,9 +94,7 @@ you find your image. Ctrl+C before the registration is sent registers nothing.
 To inspect the full image and thumbnail, download them:
 
 ```bash
-xbox xbl achievement-image download \
-  --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 \
-  --asset-id 11111111-2222-3333-4444-555555555555 --dest achievement-images
+xbox xbl achievement-image download --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --seller-id 1234567 --asset-id 11111111-2222-3333-4444-555555555555 --dest achievement-images
 ```
 
 `upload` doesn't ask before it registers an image, and `--confirm` doesn't apply to it. See

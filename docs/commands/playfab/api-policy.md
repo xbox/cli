@@ -19,7 +19,6 @@ need **Admin** permission on the title; see
 
 | Option | Command | Required | Description |
 | --- | --- | --- | --- |
-| `--policy-name` | `get`, `set` | No | The policy. Defaults to `ApiPolicy`. |
 | `--statements` | `set` | One of these two | The statements, as an inline JSON array. |
 | `--statements-file` | `set` | One of these two | A file holding the statements as a JSON array. |
 | `--policy-version` | `set` | Yes | The policy's current version, which `get` returns. PlayFab refuses the update if the policy has changed since. |

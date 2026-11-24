@@ -8,8 +8,11 @@ description: Inspect and modify Economy v2 inventory items, collections, and tra
 Read and change PlayFab Economy v2 inventory with `playfab economy inventory`, including
 collections, transaction history, and batched inventory operations.
 
-Inventory commands target the calling entity unless you pass both `--entity-id` and
-`--entity-type`. For a player, pass their title player account ID with
+Every inventory command requires `--entity-id` and `--entity-type`, which name the entity
+whose inventory to read or change. There's no default: PlayFab runs these commands as the
+title, which has no inventory and can change any player's; see
+[How PlayFab authentication works](../../authentication.md#how-playfab-authentication-works).
+For a player, pass their title player account ID with
 `--entity-type title_player_account`, not their master player account ID;
 [`playfab player account get`](player.md) returns it as
 `UserInfo.TitleInfo.TitlePlayerAccount.Id`. `--collection-id` selects an inventory
@@ -23,8 +26,8 @@ See [Safety and destructive operations](../../safety.md).
 
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
-| `playfab economy inventory list` | `/Inventory/GetInventoryItems` | Optional `--entity-id`, `--entity-type`, `--collection-id`, `--limit`, `--continuation-token`, `--filter`. |
-| `playfab economy inventory add` | `/Inventory/AddInventoryItems` | Optional `--entity-id`, `--entity-type`, `--collection-id`, `--idempotency-id`. The item: `--item-id` with optional `--stack-id`, or an `InventoryItemReference` JSON object with `--item`. `--amount` sets the quantity. |
+| `playfab economy inventory list` | `/Inventory/GetInventoryItems` | `--entity-id` and `--entity-type` required; optional `--collection-id`, `--limit`, `--continuation-token`, `--filter`. |
+| `playfab economy inventory add` | `/Inventory/AddInventoryItems` | `--entity-id` and `--entity-type` required; optional `--collection-id`, `--idempotency-id`. The item: `--item-id` with optional `--stack-id`, or an `InventoryItemReference` JSON object with `--item`. `--amount` sets the quantity. |
 
 - `inventory list` returns one page of `--limit` items, 10 by default. To get the next page,
   pass the response's continuation token with `--continuation-token`.
@@ -36,14 +39,14 @@ See [Safety and destructive operations](../../safety.md).
 
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
-| `playfab economy inventory collection list` | `/Inventory/GetInventoryCollectionIds` | Optional `--entity-id`, `--entity-type`, `--limit`, `--continuation-token`. |
+| `playfab economy inventory collection list` | `/Inventory/GetInventoryCollectionIds` | `--entity-id` and `--entity-type` required; optional `--limit`, `--continuation-token`. |
 
 ## Inventory operations
 
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
-| `playfab economy inventory operation execute` | `/Inventory/ExecuteInventoryOperations` | Optional `--entity-id`, `--entity-type`, `--collection-id`, `--idempotency-id`. The operations, as a JSON array, with exactly one of `--operations` or `--operations-file`. |
-| `playfab economy inventory operation status` | `/Inventory/GetInventoryOperationStatus` | `--operation-token` (required); `--entity-id` and `--entity-type` of the entity that gave the items; optional `--collection-id`. |
+| `playfab economy inventory operation execute` | `/Inventory/ExecuteInventoryOperations` | `--entity-id` and `--entity-type` required; optional `--collection-id`, `--idempotency-id`. The operations, as a JSON array, with exactly one of `--operations` or `--operations-file`. |
+| `playfab economy inventory operation status` | `/Inventory/GetInventoryOperationStatus` | `--operation-token`, `--entity-id`, and `--entity-type` required; optional `--collection-id`. |
 
 `operation execute` runs the batch as one transaction. Like `inventory add`, it returns
 `ETag`, `IdempotencyId`, and `TransactionIds` for the whole batch. Run `inventory list` or
@@ -60,7 +63,7 @@ operation token, and PlayFab rejects one with `Bad OperationToken.`
 
 | Command | PlayFab API path | Options |
 | --- | --- | --- |
-| `playfab economy inventory transaction list` | `/Inventory/GetTransactionHistory` | Optional `--entity-id`, `--entity-type`, `--collection-id`, `--limit`, `--continuation-token`, `--filter`, `--order-by`. |
+| `playfab economy inventory transaction list` | `/Inventory/GetTransactionHistory` | `--entity-id` and `--entity-type` required; optional `--collection-id`, `--limit`, `--continuation-token`, `--filter`, `--order-by`. |
 
 `--filter` can refer to `timestamp`, `transactionid`, `apiname`, and `operationtype`.
 `--order-by` accepts `timestamp asc` or `timestamp desc`.

@@ -20,7 +20,7 @@ public sealed class LiveReadOnlyTests(LiveCliFixture fixture)
         var root = status.RootElement;
 
         Assert.True(root.GetProperty("signedIn").GetBoolean(), "auth status did not report signedIn.");
-        Assert.Equal("githuboidc", root.GetProperty("authenticationMode").GetString());
+        Assert.Equal(fixture.Settings.AuthenticationMode, root.GetProperty("authenticationMode").GetString());
         Assert.Equal("app", root.GetProperty("principalType").GetString());
         Assert.Equal(fixture.Settings.ClientId, root.GetProperty("appId").GetString(), StringComparer.OrdinalIgnoreCase);
         Assert.Equal(fixture.Settings.TenantId, root.GetProperty("tenantId").GetString(), StringComparer.OrdinalIgnoreCase);

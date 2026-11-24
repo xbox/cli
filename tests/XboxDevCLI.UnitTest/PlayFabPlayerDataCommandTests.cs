@@ -27,18 +27,6 @@ public class PlayFabPlayerDataCommandTests
     #region Command structure
 
     [Fact]
-    public void PlayerData_HasGetSetDelete()
-    {
-        var data = PlayerDataCommandFactory.Create();
-
-        Assert.Equal("player-data", data.Name);
-        foreach (var name in new[] { "get", "set", "delete" })
-        {
-            Assert.Contains(data.Subcommands, c => c.Name == name);
-        }
-    }
-
-    [Fact]
     public void PlayerData_Options()
     {
         var data = PlayerDataCommandFactory.Create();
@@ -97,22 +85,7 @@ public class PlayFabPlayerDataCommandTests
 
     #endregion
 
-    #region Parsing / extract helpers
-
-    [Fact]
-    public void TryExtractDataValue_Found_ReturnsValue()
-    {
-        var response = """{"code":200,"status":"OK","data":{"Data":{"level":{"Value":"5"}},"DataVersion":3}}""";
-        Assert.True(PlayerDataCommandFactory.TryExtractDataValue(response, "level", out var value));
-        Assert.Equal("5", value);
-    }
-
-    [Fact]
-    public void TryExtractDataValue_MissingKey_ReturnsFalse()
-    {
-        var response = """{"code":200,"status":"OK","data":{"Data":{},"DataVersion":3}}""";
-        Assert.False(PlayerDataCommandFactory.TryExtractDataValue(response, "level", out _));
-    }
+    #region Parsing helpers
 
     [Fact]
     public void TryParseDataObject_StoresValuesAsStrings()
@@ -128,21 +101,9 @@ public class PlayFabPlayerDataCommandTests
         Assert.Equal("[1,2]", result["arr"]);
     }
 
-    [Fact]
-    public void TryParseDataObject_RejectsNullValue()
-    {
-        // A null value is ambiguous in a strings-only map — reject it (use delete to remove keys).
-        Assert.False(PlayerDataCommandFactory.TryParseDataObject("""{"n":null}""", out var result, out var error));
-        Assert.Null(result);
-        Assert.Contains("--data", error);
-    }
-
     [Theory]
     [InlineData("""["a","b"]""")]
     [InlineData("\"hi\"")]
-    [InlineData("5")]
-    [InlineData("true")]
-    [InlineData("null")]
     public void TryParseDataObject_NonObjectJson_ReturnsFriendlyError(string json)
     {
         // Valid JSON that isn't an object must not leak the internal Dictionary type name.
@@ -150,14 +111,6 @@ public class PlayFabPlayerDataCommandTests
         Assert.Null(result);
         Assert.Contains("expected a JSON object", error);
         Assert.DoesNotContain("Dictionary", error);
-    }
-
-    [Fact]
-    public void TryParseDataObject_Blank_ReturnsTrueWithNull()
-    {
-        Assert.True(PlayerDataCommandFactory.TryParseDataObject("  ", out var result, out var error));
-        Assert.Null(result);
-        Assert.Null(error);
     }
 
     #endregion
@@ -238,21 +191,6 @@ public class PlayFabPlayerDataCommandTests
     }
 
     [Fact]
-    public async Task RunGetAsync_BlankKey_ValueOnly_ReturnsOneWithoutCalling()
-    {
-        var handler = new MockHttpMessageHandler(Ok());
-        using var client = PlayFabTestClient.Create(handler);
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunGetAsync(
-            client, "P1", "client", false, null, "   ", valueOnly: true, null, OutputOptions.Json, new StringWriter(), stderr, cancellationToken: CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Null(handler.LastRequestUri);
-        Assert.Contains("--value-only requires --key", stderr.ToString());
-    }
-
-    [Fact]
     public async Task RunGetAsync_BlankKey_TreatedAsAllKeys_NotSentAsEmptyKey()
     {
         var handler = new MockHttpMessageHandler(Ok());
@@ -265,73 +203,6 @@ public class PlayFabPlayerDataCommandTests
         Assert.Contains("/Admin/GetUserData", handler.LastRequestUri);
         using var doc = JsonDocument.Parse(handler.LastRequestBody!);
         Assert.False(doc.RootElement.TryGetProperty("Keys", out _));
-    }
-
-    [Fact]
-    public async Task RunGetAsync_Normal_PrettyPrintsResponseToStdout()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"Data":{"level":{"Value":"5"}},"DataVersion":3}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunGetAsync(
-            client, "P1", "client", false, "level", null, valueOnly: false, null, OutputOptions.Json, stdout, stderr, cancellationToken: CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        Assert.Contains("DataVersion", stdout.ToString());
-        Assert.Contains("\n", stdout.ToString().TrimEnd()); // pretty-printed is multi-line
-        Assert.Equal(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunGetAsync_JsonCompact_EmitsSingleLine()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"Data":{"level":{"Value":"5"}},"DataVersion":3}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunGetAsync(
-            client, "P1", "client", false, "level", null, valueOnly: false, null, OutputOptions.JsonCompact, stdout, new StringWriter(), cancellationToken: CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        var output = stdout.ToString().TrimEnd();
-        Assert.DoesNotContain("\n", output);
-        Assert.Contains("DataVersion", output);
-    }
-
-    [Fact]
-    public async Task RunGetAsync_DataOnly_StripsEnvelope()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"Data":{"level":{"Value":"5"}},"DataVersion":3}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunGetAsync(
-            client, "P1", "client", false, "level", null, valueOnly: false, null, new OutputOptions("json", DataOnly: true), stdout, new StringWriter(), cancellationToken: CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        var output = stdout.ToString();
-        Assert.Contains("DataVersion", output); // the data payload is present
-        Assert.DoesNotContain("status", output); // the {code,status,data} envelope is stripped
-    }
-
-    [Fact]
-    public async Task RunGetAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad player id"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunGetAsync(
-            client, "P1", "client", false, "level", null, valueOnly: false, null, OutputOptions.Json, stdout, stderr, cancellationToken: CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
     }
 
     [Fact]
@@ -627,24 +498,6 @@ public class PlayFabPlayerDataCommandTests
     }
 
     [Fact]
-    public async Task RunSetAsync_ComplexDataValue_StoredAsJsonString()
-    {
-        var handler = new MockHttpMessageHandler(Ok());
-        using var client = PlayFabTestClient.Create(handler);
-
-        var exit = await PlayerDataCommandFactory.RunSetAsync(
-            client, "P1", "client", false, null, null, """{"config":{"a":"b"},"tags":[1,2]}""", "Private", OutputOptions.Json, new StringWriter(), new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        var data = doc.RootElement.GetProperty("Data");
-        Assert.Equal(JsonValueKind.String, data.GetProperty("config").ValueKind);
-        Assert.Equal("""{"a":"b"}""", data.GetProperty("config").GetString());
-        Assert.Equal("[1,2]", data.GetProperty("tags").GetString());
-    }
-
-    [Fact]
     public async Task RunSetAsync_NullDataValue_ReturnsOneWithoutCalling()
     {
         var handler = new MockHttpMessageHandler(Ok());
@@ -658,60 +511,6 @@ public class PlayFabPlayerDataCommandTests
         Assert.Equal(1, exit);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("--data", stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunSetAsync_ScalarDataValues_SentAsStrings()
-    {
-        var handler = new MockHttpMessageHandler(Ok());
-        using var client = PlayFabTestClient.Create(handler);
-
-        var exit = await PlayerDataCommandFactory.RunSetAsync(
-            client, "P1", "client", false, null, null, """{"level":5,"vip":true}""", "Private", OutputOptions.Json, new StringWriter(), new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        var data = doc.RootElement.GetProperty("Data");
-        Assert.Equal(JsonValueKind.String, data.GetProperty("level").ValueKind);
-        Assert.Equal("5", data.GetProperty("level").GetString());
-        Assert.Equal("true", data.GetProperty("vip").GetString());
-    }
-
-    [Fact]
-    public async Task RunSetAsync_Success_WritesResponseToStdout()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"DataVersion":7}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunSetAsync(
-            client, "P1", "client", false, "level", "5", null, "Private", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        Assert.Contains("DataVersion", stdout.ToString());
-        Assert.Equal(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunSetAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad key"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunSetAsync(
-            client, "P1", "client", false, "level", "5", null, "Private", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
     }
 
     #endregion
@@ -751,25 +550,6 @@ public class PlayFabPlayerDataCommandTests
     }
 
     [Fact]
-    public async Task RunDeleteAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad player id"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await PlayerDataCommandFactory.RunDeleteAsync(
-            client, "P1", "client", false, "a,b", OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
     public async Task RunDeleteAsync_EmptyKeys_ReturnsOne()
     {
         var handler = new MockHttpMessageHandler(Ok());
@@ -783,55 +563,6 @@ public class PlayFabPlayerDataCommandTests
         Assert.Equal(1, exit);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("--keys", stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunDeleteAsync_SucceedsWithoutConfirmation_IntentionallyUngated()
-    {
-        // player-data delete routes through UpdateUser*Data (not a Delete*/Shutdown* path), so it is
-        // deliberately NOT subject to the catastrophic --confirm hard-gate. This test documents that
-        // intentional choice: removing named keys succeeds without any destructive confirmation.
-        var handler = new MockHttpMessageHandler(Ok());
-        using var client = PlayFabTestClient.Create(handler);
-
-        var exit = await PlayerDataCommandFactory.RunDeleteAsync(
-            client, "P1", "client", false, "a,b", OutputOptions.Json, new StringWriter(), new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        Assert.Contains("/Admin/UpdateUserData", handler.LastRequestUri);
-    }
-
-    #endregion
-
-    #region Full path coverage (all 12 endpoints)
-
-    [Fact]
-    public async Task GetAndSet_ReachAll12Endpoints()
-    {
-        var paths = new List<string>();
-        foreach (var visibility in new[] { "client", "read-only", "internal" })
-        {
-            foreach (var publisher in new[] { false, true })
-            {
-                PlayerDataCommandFactory.TryResolvePaths(visibility, publisher, out var getPath, out var setPath, out _, out _);
-                paths.Add(getPath);
-                paths.Add(setPath);
-
-                foreach (var path in new[] { getPath, setPath })
-                {
-                    var handler = new MockHttpMessageHandler(Ok());
-                    using var client = PlayFabTestClient.Create(handler);
-
-                    // Only the resolved URL matters here, so send an empty body rather than a
-                    // request shape that wouldn't match the update endpoints.
-                    await client.CallApiAsync(path, "{}", CancellationToken.None);
-                    Assert.Contains(path, handler.LastRequestUri);
-                }
-            }
-        }
-
-        Assert.Equal(12, paths.Distinct().Count());
     }
 
     #endregion

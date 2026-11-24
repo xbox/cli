@@ -265,6 +265,26 @@ public sealed class PackageCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task List_TableCountsValidationErrors()
+    {
+        PackageSets = """{"packageSets":[{"id":"ps-1","marketGroups":[{"id":"default","packageIds":["p1","p2"]}]}],"mainPackageSetId":"ps-1"}""";
+        Gateway = request => request.Path.StartsWith(PackagesPath + "/", StringComparison.Ordinal)
+            ? RoutingHttpHandler.Json(request.Path.Split('/')[^1] == "p1"
+                ? """{"id":"p1","validationItems":[{"severity":"Error"},{"severity":"Warning"},{"severity":"Error"}]}"""
+                : """{"id":"p2","validationItems":[{"severity":"Warning"}]}""")
+            : null;
+
+        var (_, result) = await InvokeAsync(["package", "list", "--store-id", StoreId, "--output", "table"]);
+
+        Assert.Equal(0, result.ExitCode);
+        string[] lines = result.Stdout.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        int errors = lines[0].IndexOf("ERRORS", StringComparison.Ordinal);
+        Assert.True(errors > lines[0].IndexOf("STATE", StringComparison.Ordinal));
+        Assert.True(errors < lines[0].IndexOf("PLAYTEST", StringComparison.Ordinal));
+        Assert.Equal(["2", "0"], lines[2..].Select(line => line[errors..].Split(' ')[0]));
+    }
+
+    [Fact]
     public async Task List_FindsTheGameByTitleId()
     {
         var (handler, result) = await InvokeAsync(["package", "list", "--xbox-title-id", "0x1234abcd"]);

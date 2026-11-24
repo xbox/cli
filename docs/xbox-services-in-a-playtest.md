@@ -72,11 +72,11 @@ If the playtest runs past the release, end the embargo at the release. Select
 **Allow Multiplayer Invites in Embargo** if testers invite each other to multiplayer sessions.
 See [Configure embargo date](https://docs.xbox.com/publishing/game-publishing/tutorial-xbox-managed/how-to-configure-xbox-services#configure-embargo-date).
 
-The embargo is a title-wide setting, stored in the `ALL` sandbox, and applies to every sandbox.
-To check it, download `ALL`:
+The embargo is a title-wide setting, so it applies to every sandbox. To check it, download the
+title-wide configuration:
 
 ```bash
-xbox xbl config download --title-id 1234ABCD --sandbox-id ALL --view draft --dest xbox-config-all
+xbox xbl config download --title-id 1234ABCD --scope title --view draft --dest xbox-config-title
 ```
 
 `productdeveloper.xml` holds the embargo:
@@ -87,24 +87,25 @@ xbox xbl config download --title-id 1234ABCD --sandbox-id ALL --view draft --des
 ```
 
 The embargo goes live when the title-wide configuration is published. If Partner Center shows
-unpublished changes, publish them there, or with `--sandbox-id HIDDEN`:
+unpublished changes, publish them there, or with `--scope title`:
 
 > [!WARNING]
 > A title-wide publish publishes every pending title-wide change, not only the embargo, and those
 > changes reach RETAIL too. Review the pending changes first.
 
 ```bash
-xbox xbl config publish --title-id 1234ABCD --sandbox-id HIDDEN
+xbox xbl config publish --title-id 1234ABCD --scope title
 ```
 
 The command asks before it publishes. See
-[Source selection](commands/xbl.md#source-selection).
+[Title-wide publishing](commands/xbl.md#title-wide-publishing).
 
-Publishing is asynchronous. Before you publish to RETAIL, check that `lastPublish` shows the
-title-wide publish succeeded:
+`config publish` waits for the publish, and exits 0 only when it succeeded. Before you publish to
+RETAIL, make sure the title-wide publish succeeded. If the command stopped waiting first, check
+that `lastPublish` shows it succeeded:
 
 ```bash
-xbox xbl config status --title-id 1234ABCD --sandbox-id HIDDEN
+xbox xbl config status --title-id 1234ABCD --scope title
 ```
 
 ## 4. Publish the configuration to RETAIL
@@ -116,11 +117,10 @@ publish to CERT first, or certification.
 > A RETAIL publish is live for players as soon as it finishes, and published achievements can't
 > be removed. See [Safety and destructive operations](safety.md).
 
-Validate first. Validation changes nothing, and lists the achievements the publish adds:
+Validate first. Validation doesn't publish, and lists the achievements the publish adds:
 
 ```bash
-xbox xbl config publish --title-id 1234ABCD \
-  --source-sandbox-id XDKS.1 --sandbox-id RETAIL --validate-only
+xbox xbl config publish --title-id 1234ABCD --source-sandbox-id XDKS.1 --sandbox-id RETAIL --validate-only
 ```
 
 If validation shows the `FirstRetailPublishWithoutEffectiveEmbargo` warning, no embargo is in
@@ -136,7 +136,8 @@ When the validation is clean, publish. The command describes the publish and ask
 xbox xbl config publish --title-id 1234ABCD --source-sandbox-id XDKS.1 --sandbox-id RETAIL
 ```
 
-Check `lastPublish` until the publish finishes:
+The command waits until the publish finishes. If it stopped waiting first, check `lastPublish`
+until the publish finishes:
 
 ```bash
 xbox xbl config status --title-id 1234ABCD --sandbox-id RETAIL

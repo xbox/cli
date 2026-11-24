@@ -125,7 +125,7 @@ public class CommandLifecycleTests
         CommandHelpWriter.WriteRoot(rootHelp, root, "xbox", width: 200);
         Assert.Contains("Manage XBOX services configuration [Experimental]", rootHelp.ToString());
 
-        foreach (var path in new[] { "", "config list", "config status", "config download", "config save",
+        foreach (var path in new[] { "", "config list", "config status", "config diff", "config history", "config download", "config save",
                      "config publish", "schema list", "schema get", "schema download" })
         {
             var segments = new[] { "xbl" }.Concat(path.Split(' ', StringSplitOptions.RemoveEmptyEntries)).ToArray();

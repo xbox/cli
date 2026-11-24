@@ -71,8 +71,10 @@ A package is ready for a playtest when all of these are true:
   with severity `Error`.
 - `isAvailableForPlaytest` is `true`.
 
-`--output table` has `PACKAGE ID`, `VERSION`, `PLATFORM`, `STATE`, `PLAYTEST`, and `CREATED`
-columns. It doesn't show validation results, so check `validationItems` in JSON.
+`--output table` has `PACKAGE ID`, `VERSION`, `PLATFORM`, `STATE`, `ERRORS`, `PLAYTEST`, and
+`CREATED` columns. `ERRORS` is the number of `validationItems` with severity `Error`. A ready
+package has `Processed` in `STATE`, `0` in `ERRORS`, and `true` in `PLAYTEST`. To read the
+validation messages, run the command without `--output table`.
 
 ## Uploading packages
 

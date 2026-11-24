@@ -41,8 +41,7 @@ internal static class UpgradeCommandFactory
             }
             try
             {
-                using var client = createClient?.Invoke() ?? new HttpClient(
-                    new HttpClientHandler { AllowAutoRedirect = false })
+                using var client = createClient?.Invoke() ?? new HttpClient
                 {
                     Timeout = CliUpdateChecker.CheckTimeout,
                 };
@@ -69,7 +68,7 @@ internal static class UpgradeCommandFactory
             catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException
                 or ArgumentException or InvalidOperationException or InvalidDataException)
             {
-                Console.Error.WriteLine($"Update check failed: {exception.Message}");
+                Console.Error.WriteLine($"Update check failed: {NetworkErrors.Describe(exception)}");
                 return 1;
             }
         });

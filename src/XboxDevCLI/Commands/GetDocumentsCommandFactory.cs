@@ -21,20 +21,7 @@ internal static class GetDocumentsCommandFactory
     public static Command Create()
     {
         var sellerOption = new XdtsSellerOption();
-        var typeOption = new Option<string>("--type")
-        {
-            Description = "Document scope: 'sandbox' or 'account'. Default: sandbox.",
-            DefaultValueFactory = _ => "sandbox",
-        };
-        typeOption.Validators.Add(result =>
-            ValidateAllowedValue(result, "sandbox", "account"));
-        var target = new XboxLiveConfigurationTarget(
-            result => !string.Equals(result.GetValue(typeOption), "account", StringComparison.OrdinalIgnoreCase));
-        var sandboxOption = new Option<string?>("--sandbox-id")
-        {
-            HelpName = "id",
-            Description = "Case-sensitive sandbox ID. Required for the default sandbox scope.",
-        };
+        var scope = new XboxLiveConfigurationScope("Case-sensitive sandbox ID.", account: true);
         var destinationOption = new Option<string>("--dest")
         {
             Description = "Directory where downloaded documents and ETag metadata are saved.",
@@ -47,6 +34,7 @@ internal static class GetDocumentsCommandFactory
         };
         viewOption.Validators.Add(result =>
             ValidateAllowedValue(result, "draft", "published"));
+        viewOption.CompletionSources.Add("draft", "published");
         var versionOption = new Option<ulong?>("--version")
         {
             Description = "Historical document-set version. Default: latest version.",
@@ -74,48 +62,28 @@ internal static class GetDocumentsCommandFactory
             "Download XBOX services configuration documents");
         command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.ReadOnly,
-            Scope: "A sandbox or account XBOX services configuration document set.",
+            Scope: "A sandbox's, the title-wide, or the account's XBOX services configuration document set.",
             Output: "Extracted documents, ETag metadata, and a JSON or table download summary.",
             Examples:
             [
                 "xbox xbl config download --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --view draft --dest xbox-config",
                 "xbox xbl config download --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --view published --dest xbox-config --output table",
-                "xbox xbl config download --type account --view draft --dest xbox-config",
+                "xbox xbl config download --title-id 1234ABCD --scope title --view draft --dest xbox-config-title",
+                "xbox xbl config download --scope account --view draft --dest xbox-config-account",
                 "xbox xbl config download --title-id 1234ABCD --sandbox-id XDKS.1 --view draft --dest xbox-config",
             ],
             Table: XboxPartnerCommandSupport.DocumentDownloadTableView));
         sellerOption.AddTo(command);
-        command.Options.Add(typeOption);
-        target.AddTo(command);
-        command.Options.Add(sandboxOption);
+        scope.AddTo(command);
         command.Options.Add(destinationOption);
         command.Options.Add(viewOption);
         command.Options.Add(versionOption);
         command.Options.Add(documentOption);
         command.Validators.Add(result =>
         {
-            string type = result.GetValue(typeOption) ?? "sandbox";
-            string? sandbox = result.GetValue(sandboxOption);
-            if (type.Equals("sandbox", StringComparison.OrdinalIgnoreCase))
+            if (!IsValidEtagSandbox(scope.GetSandboxToken(result)))
             {
-                if (!IsValidSandbox(sandbox))
-                {
-                    result.AddError(
-                        "--sandbox-id is required for sandbox documents and cannot contain " +
-                        "whitespace or path characters.");
-                }
-            }
-            else
-            {
-                if (result.GetResult("--scid") is OptionResult { Implicit: false } || !string.IsNullOrWhiteSpace(sandbox))
-                {
-                    result.AddError("--scid and --sandbox-id cannot be used with account documents.");
-                }
-
-                if (result.GetResult("--title-id") is OptionResult { Implicit: false })
-                {
-                    result.AddError("--title-id cannot be used with account documents.");
-                }
+                result.AddError("--sandbox-id can't contain path characters.");
             }
         });
         command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
@@ -124,48 +92,33 @@ internal static class GetDocumentsCommandFactory
             var verbose = parseResult.GetValue(Program.VerboseOption);
             try
             {
-                string type = (parseResult.GetValue(typeOption) ?? "sandbox")
-                    .ToLowerInvariant();
-                string? sandbox = parseResult.GetValue(sandboxOption)?.Trim();
-                if (string.IsNullOrWhiteSpace(sandbox))
-                {
-                    sandbox = null;
-                }
-
                 var configuration = Program.GetConfiguration(parseResult);
                 using var client = Program.XboxPartnerClientFactory is null
                     ? new XboxPartnerClient(
                         configuration,
                         authenticationService: Program.GetAuthentication(parseResult))
                     : Program.XboxPartnerClientFactory(configuration);
-                string baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
-                long? sellerId = await sellerOption.GetSellerIdAsync(
-                    parseResult,
-                    configuration,
-                    client,
-                    baseUrl,
-                    cancellationToken);
-                var selected = type == "sandbox"
-                    ? await target.SelectAsync(parseResult, sellerId)
-                    : null;
+                _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+                long? sellerId = sellerOption.GetSellerId(parseResult);
+                var selected = await scope.SelectAsync(parseResult, sellerId);
+                bool published = string.Equals(
+                    parseResult.GetValue(viewOption), "published", StringComparison.OrdinalIgnoreCase);
                 var request = new XboxLiveGetDocumentsRequest(
-                    type,
-                    selected?.Scid,
-                    sandbox,
-                    string.Equals(parseResult.GetValue(viewOption), "published", StringComparison.OrdinalIgnoreCase)
-                        ? "published"
-                        : "working",
+                    selected.Scope == XboxLiveScope.Account ? "account" : "sandbox",
+                    selected.Scid,
+                    published ? selected.LiveSandbox : selected.DraftSandbox,
+                    published ? "published" : "working",
                     parseResult.GetValue(versionOption),
                     parseResult.GetValue(documentOption) ?? [],
-                    selected?.TitleId);
+                    selected.TitleId);
                 Program.WriteVerbose(
                     verbose,
-                    () => $"Download {request.DocumentType} {DisplayView(request.View)} documents to " +
+                    () => $"Download {DisplayView(request.View)} documents to " +
                         parseResult.GetValue(destinationOption) +
-                        (selected is null ? "" : $" for {selected.Describe()}"));
+                        $" for {selected.Describe()}");
                 return await RunAsync(
                     client,
-                    selected?.SellerId ?? sellerId,
+                    selected.SellerId,
                     request,
                     parseResult.GetValue(destinationOption)!,
                     output,
@@ -186,6 +139,7 @@ internal static class GetDocumentsCommandFactory
             }
             catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
             {
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
                 Console.Error.WriteLine($"Request failed: {ex.Message}");
                 return 1;
             }
@@ -222,11 +176,8 @@ internal static class GetDocumentsCommandFactory
                 XboxLiveConfigurationTarget.WriteResolved(effectiveTarget, sellerId, stderr);
             }
             string directory = Path.GetFullPath(destination);
-            string eTagFileName = request.DocumentType.Equals(
-                "account",
-                StringComparison.OrdinalIgnoreCase)
-                ? "Account.etag"
-                : $"{request.Sandbox}.etag";
+            XboxLiveScope scope = XboxLiveConfigurationScope.ScopeOf(request.DocumentType, request.Sandbox, IsPublished(request));
+            string eTagFileName = XboxLiveConfigurationScope.EtagFileName(scope, request.Sandbox);
             if (LocalFileNameValidator.IsInvalid(
                     eTagFileName,
                     enforceWindowsRules: OperatingSystem.IsWindows()))
@@ -250,8 +201,8 @@ internal static class GetDocumentsCommandFactory
                     tableView,
                     [
                         [
-                            request.DocumentType.ToLowerInvariant(),
-                            request.Sandbox ?? "",
+                            XboxLiveConfigurationScope.Name(scope),
+                            scope == XboxLiveScope.Sandbox ? request.Sandbox ?? "" : "",
                             DisplayView(archive.View),
                             archive.Version.ToString(
                                 System.Globalization.CultureInfo.InvariantCulture),
@@ -263,7 +214,7 @@ internal static class GetDocumentsCommandFactory
                 : JsonSerializer.Serialize(
                     new
                     {
-                        type = request.DocumentType.ToLowerInvariant(),
+                        scope = XboxLiveConfigurationScope.Name(scope),
                         view = DisplayView(archive.View),
                         version = archive.Version,
                         etag = archive.ETag,
@@ -286,15 +237,22 @@ internal static class GetDocumentsCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
             stderr.WriteLine($"Request failed: {ex.Message}");
             return 1;
         }
     }
 
     internal static string DescribeDownload(XboxLiveGetDocumentsRequest request) =>
-        request.Sandbox is { } sandbox
-            ? $"Downloading {DisplayView(request.View)} documents from {sandbox}"
-            : $"Downloading {DisplayView(request.View)} account documents";
+        XboxLiveConfigurationScope.ScopeOf(request.DocumentType, request.Sandbox, IsPublished(request)) switch
+        {
+            XboxLiveScope.Account => $"Downloading {DisplayView(request.View)} account documents",
+            XboxLiveScope.Title => $"Downloading {DisplayView(request.View)} title-wide documents",
+            _ => $"Downloading {DisplayView(request.View)} documents from {request.Sandbox}",
+        };
+
+    private static bool IsPublished(XboxLiveGetDocumentsRequest request) =>
+        string.Equals(request.View, "published", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The <c>--view</c> name for a service view: the service calls the draft set "working".</summary>
     internal static string DisplayView(string view) =>
@@ -526,12 +484,11 @@ internal static class GetDocumentsCommandFactory
         }
     }
 
-    private static bool IsValidSandbox(string? sandbox)
+    /// <summary>Whether a sandbox ID can name its ETag file: no path characters, and not <c>.</c> or <c>..</c>.</summary>
+    internal static bool IsValidEtagSandbox(string? sandbox)
     {
         string value = sandbox?.Trim() ?? string.Empty;
-        return !string.IsNullOrWhiteSpace(value) &&
-            !value.Any(char.IsWhiteSpace) &&
-            value.IndexOfAny(['/', '\\', ':', '\0']) < 0 &&
+        return value.IndexOfAny(['/', '\\', ':', '\0']) < 0 &&
             value is not "." and not "..";
     }
 

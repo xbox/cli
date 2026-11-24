@@ -13,27 +13,11 @@ namespace XboxDevCLI.Commands;
 
 internal static class CommitDocumentsCommandFactory
 {
-    /// <summary>The write was sent, but whether it took effect is unknown.</summary>
-    internal const int OutcomeUnknownExitCode = 3;
-
     public static Command Create(PublishConfirmationDependencies? confirmationDependencies = null)
     {
         var dependencies = confirmationDependencies ?? PublishConfirmationDependencies.Default;
         var sellerOption = new XdtsSellerOption();
-        var typeOption = new Option<string>("--type")
-        {
-            Description = "Document scope: 'sandbox' or 'account'. Default: sandbox.",
-            DefaultValueFactory = _ => "sandbox",
-        };
-        typeOption.Validators.Add(result =>
-            ValidateAllowedValue(result, "sandbox", "account"));
-        var target = new XboxLiveConfigurationTarget(
-            result => !string.Equals(result.GetValue(typeOption), "account", StringComparison.OrdinalIgnoreCase));
-        var sandboxOption = new Option<string?>("--sandbox-id")
-        {
-            HelpName = "id",
-            Description = "Case-sensitive sandbox ID. Required for the default sandbox scope.",
-        };
+        var scope = new XboxLiveConfigurationScope("Case-sensitive sandbox ID.", account: true);
         var filesOption = new Option<string[]>("--file")
         {
             Description =
@@ -74,20 +58,22 @@ internal static class CommitDocumentsCommandFactory
 
         var command = new Command(
             "save",
-            "Validate or save XBOX services configuration documents to the working configuration");
+            "Validate or save XBOX services configuration documents to the draft");
         command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.RemoteMutation,
-            Scope: "A sandbox or account XBOX services working configuration document set.",
+            Scope: "A sandbox's, the title's, or the seller account's XBOX services configuration draft.",
             Output: "The validation or save result and local ETag metadata as JSON or a table.",
             Examples:
             [
                 "xbox xbl config save --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --file \"xbox-config/*.xml\" --validate-only",
                 "xbox xbl config save --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --file xbox-config/achievements2017.xml --file xbox-config/localization.xml --output table",
-                "xbox xbl config save --type account --file \"xbox-config/*.xml\" --message \"Update account configuration\"",
+                "xbox xbl config save --title-id 1234ABCD --scope title --file xbox-config-title/productdeveloper.xml --validate-only",
+                "xbox xbl config save --scope account --file \"xbox-config-account/*.xml\" --message \"Update account configuration\"",
                 "xbox xbl config save --title-id 1234ABCD --sandbox-id XDKS.1 --file \"xbox-config/*.xml\" --validate-only",
             ],
             SafetyDetails:
-                "Without --validate-only, saves the selected working configuration documents. " +
+                "Without --validate-only, saves the selected documents to the draft. " +
+                "Players and test accounts see them only after config publish. " +
                 "Every title bound to a primary title shares its configuration. A --title-id that selects a " +
                 "bound title is refused, even with --validate-only; rerun with the primary's --scid. A write by " +
                 "--title-id, validation included, to configuration other titles are bound to lists them and " +
@@ -95,9 +81,7 @@ internal static class CommitDocumentsCommandFactory
                 "--allow-shared-configuration. A write by --scid isn't checked.",
             Table: XboxPartnerCommandSupport.DocumentCommitTableView));
         sellerOption.AddTo(command);
-        command.Options.Add(typeOption);
-        target.AddTo(command);
-        command.Options.Add(sandboxOption);
+        scope.AddTo(command);
         command.Options.Add(filesOption);
         command.Options.Add(validateOnlyOption);
         command.Options.Add(eTagOption);
@@ -106,34 +90,16 @@ internal static class CommitDocumentsCommandFactory
         command.Options.Add(allowSharedOption);
         command.Validators.Add(result =>
         {
-            string type = result.GetValue(typeOption) ?? "sandbox";
-            string? sandbox = result.GetValue(sandboxOption);
-            if (type.Equals("sandbox", StringComparison.OrdinalIgnoreCase))
+            if (scope.GetSandboxToken(result) is { } sandbox && !IsValidSandbox(sandbox))
             {
-                if (!IsValidSandbox(sandbox))
-                {
-                    result.AddError(
-                        "--sandbox-id is required for sandbox documents and cannot contain " +
-                        "whitespace or path characters.");
-                }
+                result.AddError("--sandbox-id can't contain path characters or name a reserved file.");
             }
-            else
+
+            if (scope.GetScope(result) == XboxLiveScope.Account &&
+                result.GetResult(allowSharedOption) is { Implicit: false })
             {
-                if (result.GetResult("--scid") is OptionResult { Implicit: false } || !string.IsNullOrWhiteSpace(sandbox))
-                {
-                    result.AddError("--scid and --sandbox-id cannot be used with account documents.");
-                }
-
-                if (result.GetResult("--title-id") is OptionResult { Implicit: false })
-                {
-                    result.AddError("--title-id cannot be used with account documents.");
-                }
-
-                if (result.GetResult(allowSharedOption) is { Implicit: false })
-                {
-                    result.AddError(
-                        $"{XboxLiveConfigurationTarget.AllowSharedConfigurationOptionName} cannot be used with account documents.");
-                }
+                result.AddError(
+                    $"{XboxLiveConfigurationTarget.AllowSharedConfigurationOptionName} cannot be used with --scope account.");
             }
         });
         command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
@@ -142,34 +108,23 @@ internal static class CommitDocumentsCommandFactory
             var verbose = parseResult.GetValue(Program.VerboseOption);
             try
             {
-                string type = parseResult.GetValue(typeOption) ?? "sandbox";
                 var configuration = Program.GetConfiguration(parseResult);
                 using var client = Program.XboxPartnerClientFactory is null
                     ? new XboxPartnerClient(
                         configuration,
                         authenticationService: Program.GetAuthentication(parseResult))
                     : Program.XboxPartnerClientFactory(configuration);
-                string baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
-                long? sellerId = await sellerOption.GetSellerIdAsync(
-                    parseResult,
-                    configuration,
-                    client,
-                    baseUrl,
-                    cancellationToken);
-                var selected = type.Equals("sandbox", StringComparison.OrdinalIgnoreCase)
-                    ? await target.SelectAsync(parseResult, sellerId)
-                    : null;
-                string description = $"{(parseResult.GetValue(validateOnlyOption) ? "Validate" : "Save")} " +
-                    $"{type} documents";
-                Program.WriteVerbose(verbose, () => selected is null
-                    ? description
-                    : $"{description} for {selected.Describe()} in {parseResult.GetValue(sandboxOption)}");
+                _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+                long? sellerId = sellerOption.GetSellerId(parseResult);
+                var selected = await scope.SelectAsync(parseResult, sellerId);
+                Program.WriteVerbose(verbose, () =>
+                    $"{(parseResult.GetValue(validateOnlyOption) ? "Validate" : "Save")} documents for {selected.Describe()}");
                 return await RunAsync(
                     client,
-                    selected?.SellerId ?? sellerId,
-                    type,
-                    selected?.Scid,
-                    parseResult.GetValue(sandboxOption),
+                    selected.SellerId,
+                    selected.Scope == XboxLiveScope.Account ? "account" : "sandbox",
+                    selected.Scid,
+                    selected.DraftSandbox,
                     parseResult.GetValue(filesOption) ?? [],
                     parseResult.GetValue(validateOnlyOption),
                     parseResult.GetValue(forceOption),
@@ -196,6 +151,7 @@ internal static class CommitDocumentsCommandFactory
             }
             catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
             {
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
                 Console.Error.WriteLine($"Request failed: {ex.Message}");
                 return 1;
             }
@@ -229,19 +185,19 @@ internal static class CommitDocumentsCommandFactory
         string[] files = [];
         var sent = false;
         string? sentCorrelationId = null;
-        var answered = false;
         XboxLiveResolvedConfigurationTarget? resolved = null;
         try
         {
             string normalizedDocumentType = documentType.Trim().ToLowerInvariant();
             string? normalizedSandbox = NormalizeOptional(sandbox);
+            XboxLiveScope scope = XboxLiveConfigurationScope.ScopeOf(normalizedDocumentType, normalizedSandbox);
             files = ResolveFiles(filePatterns);
             IReadOnlyList<XboxDocumentUpload> documents = await ReadDocumentsAsync(
                 files,
                 cancellationToken).ConfigureAwait(false);
             string eTagPath = GetEtagPath(
                 files[0],
-                normalizedDocumentType,
+                scope,
                 normalizedSandbox);
             ValidateEtagDestination(eTagPath);
             string? resolvedEtag = force
@@ -263,24 +219,35 @@ internal static class CommitDocumentsCommandFactory
             XboxPartnerOperationResult<XboxLiveCommitResponse> response;
             try
             {
-                response = await SendAsync(request).ConfigureAwait(false);
-            }
-            catch (XboxPartnerApiException ex) when (
-                !request.AllowSharedConfiguration &&
-                XboxLiveConfigurationTarget.ReadSharedConfiguration(ex) is not null)
-            {
-                // The service refused the first send, so nothing was saved.
-                sent = false;
-                if (!await XboxLiveConfigurationTarget.ConfirmSharedConfigurationAsync(
-                    XboxLiveConfigurationTarget.ReadSharedConfiguration(ex)!, ex, compact, validateOnly,
-                    sharedConfirmation, stderr,
-                    cancellationToken).ConfigureAwait(false))
+                try
                 {
-                    return 1;
+                    response = await SendAsync(request).ConfigureAwait(false);
                 }
+                catch (XboxPartnerApiException ex) when (
+                    !request.AllowSharedConfiguration &&
+                    XboxLiveConfigurationTarget.ReadSharedConfiguration(ex) is not null)
+                {
+                    // The service refused the first send, so nothing was saved.
+                    sent = false;
+                    if (!await XboxLiveConfigurationTarget.ConfirmSharedConfigurationAsync(
+                        XboxLiveConfigurationTarget.ReadSharedConfiguration(ex)!, ex, compact, validateOnly,
+                        sharedConfirmation, stderr,
+                        cancellationToken).ConfigureAwait(false))
+                    {
+                        return 1;
+                    }
 
-                request = request with { AllowSharedConfiguration = true };
-                response = await SendAsync(request).ConfigureAwait(false);
+                    request = request with { AllowSharedConfiguration = true };
+                    response = await SendAsync(request).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (!validateOnly && sent && XboxPartnerCommandSupport.IsUncertainSubmission(ex))
+            {
+                XboxPartnerCommandSupport.WriteUncertainCause(ex, compact, stderr, cancellationToken, sentCorrelationId);
+                stderr.WriteLine("It is unknown whether the documents were saved. Don't resubmit them.");
+                stderr.WriteLine(
+                    $"Check with: {FormatDownloadCheck(documentType, scid, sandbox, sellerId, titleId, resolved, recoveryPrefix)}");
+                return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
             }
 
             async Task<XboxPartnerOperationResult<XboxLiveCommitResponse>> SendAsync(
@@ -311,7 +278,6 @@ internal static class CommitDocumentsCommandFactory
                 }
             }
 
-            answered = true;
             XboxLiveCommitResponse result = response.Value;
             IReadOnlyList<XboxLiveValidationMessage> validationMessages =
                 XboxLiveValidationMessages.Read(result.ValidationInfo);
@@ -335,8 +301,8 @@ internal static class CommitDocumentsCommandFactory
                     tableView,
                     [
                         [
-                            normalizedDocumentType,
-                            normalizedSandbox ?? "",
+                            XboxLiveConfigurationScope.Name(scope),
+                            scope == XboxLiveScope.Sandbox ? normalizedSandbox ?? "" : "",
                             validateOnly.ToString(),
                             result.CanCommit?.ToString() ?? "",
                             result.Committed?.ToString() ?? "",
@@ -355,6 +321,11 @@ internal static class CommitDocumentsCommandFactory
                     compact ? CompactJsonOptions : PrettyJsonOptions));
             if (!failed)
             {
+                if (!validateOnly && result.Committed == true)
+                {
+                    stderr.WriteLine(DescribeSaved(recoveryPrefix ?? CliIdentity.CommandName, sellerId, scid, normalizedSandbox, titleId));
+                }
+
                 return 0;
             }
 
@@ -365,15 +336,6 @@ internal static class CommitDocumentsCommandFactory
         {
             stderr.WriteLine("Canceled before the request was sent, so no documents were saved.");
             return 1;
-        }
-        catch (Exception ex) when (!validateOnly && sent && !answered
-            && XboxPartnerCommandSupport.IsUncertainSubmission(ex))
-        {
-            XboxPartnerCommandSupport.WriteUncertainCause(ex, compact, stderr, cancellationToken, sentCorrelationId);
-            stderr.WriteLine("It is unknown whether the documents were saved. Don't resubmit them.");
-            stderr.WriteLine(
-                $"Check with: {FormatDownloadCheck(documentType, scid, sandbox, sellerId, titleId, resolved, recoveryPrefix)}");
-            return OutcomeUnknownExitCode;
         }
         catch (XboxPartnerApiException ex)
         {
@@ -391,9 +353,42 @@ internal static class CommitDocumentsCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
             stderr.WriteLine($"Request failed: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// The line every save ends with: where the documents went, that they aren't published, and the
+    /// command that shows or publishes them. <paramref name="commandPrefix"/> is <c>xbox</c> with
+    /// the caller's sign-in and profile options, so the command acts as the same account and seller.
+    /// The command names the title the way the save did: by <paramref name="scid"/>, or else by
+    /// <paramref name="titleId"/>.
+    /// </summary>
+    internal static string DescribeSaved(string commandPrefix, long? sellerId, Guid? scid, string? sandbox, string? titleId = null)
+    {
+        string seller = sellerId is { } id
+            ? FormattableString.Invariant($" --seller-id {id}")
+            : string.Empty;
+        string target = scid is { } value ? $"--scid {value:D}" : $"--title-id {titleId}";
+        if (sandbox is null)
+        {
+            return $"Saved to the account draft. Not published yet. Run '{commandPrefix} xbl config publish --scope account{seller}' to publish it.";
+        }
+
+        if (string.Equals(sandbox, XboxLiveConfigurationScope.TitleDraftSandbox, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Saved to the title draft. Not published yet. Run '{commandPrefix} xbl config status --scope title {target}{seller}' to see where each document goes live. dataplatformconfig, titlepriv, and nsal go live with each sandbox's own publish, so check them with --sandbox-id <sandbox>.";
+        }
+
+        if (XboxLiveConfigurationScopes.IsTitleSandbox(sandbox))
+        {
+            // A publish to HIDDEN takes the title draft in ALL, not HIDDEN's own draft.
+            return $"Saved to the {sandbox} draft. Not published yet. Run '{FormatDownloadCheck("sandbox", scid, sandbox, sellerId, titleId, recoveryPrefix: commandPrefix)}' to check it.";
+        }
+
+        return $"Saved to the {sandbox} draft. Not published yet. Run '{commandPrefix} xbl config publish {target} --sandbox-id {ShellQuoting.Quote(sandbox)}{seller}' to publish it.";
     }
 
     /// <summary>
@@ -406,30 +401,41 @@ internal static class CommitDocumentsCommandFactory
         string? recoveryPrefix = null)
     {
         string prefix = recoveryPrefix ?? CliIdentity.CommandName;
-        if (string.Equals(documentType.Trim(), "account", StringComparison.OrdinalIgnoreCase))
+        XboxLiveScope scope = XboxLiveConfigurationScope.ScopeOf(documentType, sandbox);
+        if (scope == XboxLiveScope.Account)
         {
             long? seller = resolved?.SellerId ?? sellerId;
-            return $"{prefix} xbl config download --type account " +
+            return $"{prefix} xbl config download --scope account " +
                 (seller is { } s ? $"--seller-id {s.ToString(CultureInfo.InvariantCulture)} " : "") +
                 "--view draft --dest <directory>";
         }
 
         return $"{prefix} xbl config download " +
             XboxPartnerCommandSupport.FormatConfigurationTarget(resolved, scid, titleId, sellerId) +
-            $" --sandbox-id {ShellQuoting.Quote(sandbox?.Trim() ?? "")} --view draft --dest <directory>";
+            (scope == XboxLiveScope.Title
+                ? " --scope title"
+                : $" --sandbox-id {ShellQuoting.Quote(sandbox?.Trim() ?? "")}") +
+            " --view draft --dest <directory>";
     }
 
     internal static string DescribeCommit(XboxLiveCommitDocumentsRequest request)
     {
         int count = request.Documents.Count;
-        string documents = FormattableString.Invariant(
-            $"{count} {(request.Sandbox is null ? "account " : "")}{(count == 1 ? "document" : "documents")}");
-        return (request.ValidateOnly, request.Sandbox) switch
+        XboxLiveScope scope = XboxLiveConfigurationScope.ScopeOf(request.DocumentType, request.Sandbox);
+        string kind = scope switch
         {
-            (true, null) => $"Validating {documents}",
-            (true, { } sandbox) => $"Validating {documents} for {sandbox}",
-            (false, null) => $"Saving {documents}",
-            (false, { } sandbox) => $"Saving {documents} to {sandbox}",
+            XboxLiveScope.Account => "account ",
+            XboxLiveScope.Title => "title-wide ",
+            _ => "",
+        };
+        string documents = FormattableString.Invariant(
+            $"{count} {kind}{(count == 1 ? "document" : "documents")}");
+        return (request.ValidateOnly, scope == XboxLiveScope.Sandbox) switch
+        {
+            (true, false) => $"Validating {documents}",
+            (true, true) => $"Validating {documents} for {request.Sandbox}",
+            (false, false) => $"Saving {documents}",
+            (false, true) => $"Saving {documents} to {request.Sandbox}",
         };
     }
 
@@ -443,7 +449,7 @@ internal static class CommitDocumentsCommandFactory
         WriteIndented = false,
     };
 
-    private static string[] ResolveFiles(IReadOnlyList<string> patterns)
+    internal static string[] ResolveFiles(IReadOnlyList<string> patterns)
     {
         var files = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -540,7 +546,7 @@ internal static class CommitDocumentsCommandFactory
         }
     }
 
-    private static async Task<IReadOnlyList<XboxDocumentUpload>> ReadDocumentsAsync(
+    internal static async Task<IReadOnlyList<XboxDocumentUpload>> ReadDocumentsAsync(
         IReadOnlyList<string> files,
         CancellationToken cancellationToken)
     {
@@ -687,12 +693,10 @@ internal static class CommitDocumentsCommandFactory
 
     private static string GetEtagPath(
         string firstFile,
-        string documentType,
+        XboxLiveScope scope,
         string? sandbox)
     {
-        string fileName = documentType.Equals("account", StringComparison.OrdinalIgnoreCase)
-            ? "Account.etag"
-            : $"{sandbox}.etag";
+        string fileName = XboxLiveConfigurationScope.EtagFileName(scope, sandbox);
         if (LocalFileNameValidator.IsInvalid(
                 fileName,
                 enforceWindowsRules: OperatingSystem.IsWindows()))
@@ -744,23 +748,5 @@ internal static class CommitDocumentsCommandFactory
             !LocalFileNameValidator.IsInvalid(
                 $"{value}.etag",
                 enforceWindowsRules: OperatingSystem.IsWindows());
-    }
-
-    private static void ValidateAllowedValue(
-        OptionResult result,
-        params string[] allowedValues)
-    {
-        if (result.Tokens.Count == 0)
-        {
-            return;
-        }
-
-        string value = result.Tokens[0].Value;
-        if (!allowedValues.Contains(value, StringComparer.OrdinalIgnoreCase))
-        {
-            result.AddError(
-                $"Invalid value '{value}' for option '{result.Option.Name}'. " +
-                $"Allowed values: {string.Join(", ", allowedValues)}.");
-        }
     }
 }

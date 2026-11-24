@@ -52,8 +52,8 @@ Token expires at: YYYY-MM-DD HH:MM:SS
 Scopes: <scope>/.default
 ```
 
-In a script, pass `--output json` and check `signedIn`. A nonzero exit means the CLI couldn't
-read its settings or token cache.
+`auth status` exits 0 whether or not you're signed in. A nonzero exit means it couldn't read its
+settings or token cache.
 
 Saved defaults, such as the seller or PlayFab title, are separate from sign-in. See
 [Context](commands/context.md).
@@ -82,6 +82,14 @@ the title, or on the studio for the
 [`playfab service-principal`](commands/playfab/service-principal.md) commands. A Studio Admin
 grants it in PlayFab's Game Manager, for example with the built-in **Title Admin** role; see
 [PlayFab user roles](https://docs.xbox.com/services/playfab/identity/dev-identity/permissions/playfab-user-roles).
+
+PlayFab authorizes each call with the signed-in account, but runs a call to a title's APIs as
+the title, not as you or a player. PlayFab APIs that act on an entity, such as a player or a
+group, accept the call only if a title can make it, as
+[Microsoft Entra ID authentication for PlayFab APIs](https://docs.xbox.com/services/playfab/identity/dev-identity/authentication/entra-id-api-authentication)
+describes. As the title, commands such as [`playfab group`](commands/playfab/group.md),
+[`playfab economy`](commands/playfab/economy.md), and [`playfab file`](commands/playfab/file.md)
+can act on any player.
 
 A [service principal](#automation-service-principal-authentication) gets PlayFab access only
 when a person grants it with `xbox playfab service-principal set`. A service principal can't

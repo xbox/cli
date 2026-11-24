@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using XboxDevCLI.Services;
 
@@ -32,6 +30,12 @@ internal sealed record TestAccountLookupOutcome(
 /// <summary>An email address and the batch email templates that could hold it.</summary>
 internal sealed record TestAccountEmail(string Address, IReadOnlyList<string> Templates);
 
+/// <summary>The account to find: its email address or its XUID, exactly one of them.</summary>
+internal sealed record TestAccountKey(TestAccountEmail? Email, ulong? Xuid)
+{
+    public string Display => Email?.Address ?? $"XUID {Xuid!.Value.ToString(CultureInfo.InvariantCulture)}";
+}
+
 /// <summary>
 /// Finds the batch that holds a test account. XBOX names accounts
 /// <c>{prefix}-{template}{5 digit index}@xboxtest.com</c> and a batch's email template is
@@ -41,7 +45,8 @@ internal sealed record TestAccountEmail(string Address, IReadOnlyList<string> Te
 /// <remarks>
 /// Some batches store the template without the prefix (<c>-{template}</c>) although their accounts
 /// carry it, so XboxPartner's <c>emailPrefix</c> filter cannot find them. The lookup therefore lists
-/// every batch and matches both forms itself.
+/// every batch and matches both forms itself. A XUID goes as the <c>xuid</c> filter; a XUID says
+/// nothing about the template, so without the filter only the newest batches are read.
 /// </remarks>
 internal static partial class TestAccountLookup
 {
@@ -61,6 +66,34 @@ internal static partial class TestAccountLookup
     [GeneratedRegex(@"^[A-Za-z0-9](?:[A-Za-z0-9_-]|\.(?!\.))*(?<!\.)$", RegexOptions.CultureInvariant)]
     private static partial Regex LocalPartPattern();
 
+    /// <summary>
+    /// Returns the problem with <paramref name="value"/>, or null and the account it names: a XUID
+    /// when it's all digits, otherwise an email.
+    /// </summary>
+    internal static string? TryParseKey(string? value, out TestAccountKey? key)
+    {
+        key = null;
+        string text = value?.Trim() ?? string.Empty;
+        if (text.Length > 0 && text.All(char.IsAsciiDigit))
+        {
+            if (!ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out ulong xuid) || xuid == 0)
+            {
+                return $"{text} isn't a valid XUID, such as 2814600000000001.";
+            }
+
+            key = new TestAccountKey(null, xuid);
+            return null;
+        }
+
+        string? problem = TryParse(text, out TestAccountEmail? email);
+        if (problem is null)
+        {
+            key = new TestAccountKey(email, null);
+        }
+
+        return problem;
+    }
+
     /// <summary>Returns the problem with <paramref name="value"/>, or null and its parts.</summary>
     internal static string? TryParse(string? value, out TestAccountEmail? email)
     {
@@ -69,7 +102,7 @@ internal static partial class TestAccountLookup
         int at = address.IndexOf('@', StringComparison.Ordinal);
         if (at <= 0 || at != address.LastIndexOf('@') || address.Any(char.IsWhiteSpace))
         {
-            return $"email must look like ABCD-tester00000@{Domain}.";
+            return $"Pass an email such as ABCD-tester00000@{Domain}, or a XUID such as 2814600000000001.";
         }
 
         if (!string.Equals(address[(at + 1)..], Domain, StringComparison.OrdinalIgnoreCase))
@@ -108,34 +141,48 @@ internal static partial class TestAccountLookup
     }
 
     /// <summary>
-    /// Lists the seller's batches whose template could hold the email, then reads each (newest
-    /// first, up to <see cref="MaxCandidates"/>) for the account. Every candidate is read, so an
-    /// address found in more than one batch is reported rather than hidden.
+    /// Lists the seller's batches that could hold the account, then reads each (newest first, up
+    /// to <see cref="MaxCandidates"/>) for it. Every candidate is read, so an account found in more
+    /// than one batch is reported rather than hidden.
     /// </summary>
     internal static async Task<TestAccountLookupOutcome> FindAsync(
         XboxPartnerClient client,
         long? sellerId,
-        TestAccountEmail email,
+        TestAccountKey key,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         string listJson = await client.ListTestAccountBatchesAsync(
             sellerId,
-            new TestAccountBatchFilter(),
+            new TestAccountBatchFilter(Xuid: key.Xuid?.ToString(CultureInfo.InvariantCulture)),
             cancellationToken).ConfigureAwait(false);
         var list = XboxPartnerCommandSupport.DeserializeResponse<TestAccountBatchesResponse>(
             listJson,
             "test account batch list",
             serviceName: null);
-        if (list.Batches is null || list.Batches.Any(batch => batch is null))
+        if (list.Batches.Any(batch => batch is null))
         {
-            throw new InvalidDataException(
-                "The test account batch list response must contain a 'batches' array.");
+            throw new InvalidDataException("The test account batch list response contained a null batch.");
         }
 
-        var candidates = list.Batches
-            .Where(batch => email.Templates.Contains(batch.EmailTemplate ?? string.Empty, StringComparer.OrdinalIgnoreCase))
-            .ToList();
+        List<TestAccountBatch> candidates;
+        Func<TestAccount, bool> isMatch;
+        if (key.Email is { } email)
+        {
+            candidates = list.Batches
+                .Where(batch => email.Templates.Contains(batch.EmailTemplate ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            isMatch = account => string.Equals(account.Email, email.Address, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            // A service with the xuid filter returns only the account's batch. One without it
+            // returns every batch, and only the newest MaxCandidates of those are read.
+            string xuid = key.Xuid!.Value.ToString(CultureInfo.InvariantCulture);
+            candidates = [.. list.Batches];
+            isMatch = account => string.Equals(account.Xuid, xuid, StringComparison.Ordinal);
+        }
+
         var matches = new List<TestAccountLookupResult>();
         int read = 0;
         foreach (TestAccountBatch candidate in candidates.Take(MaxCandidates))
@@ -155,8 +202,7 @@ internal static partial class TestAccountLookup
             }
 
             read++;
-            foreach (TestAccount account in detail.Accounts.Where(account =>
-                string.Equals(account.Email, email.Address, StringComparison.OrdinalIgnoreCase)))
+            foreach (TestAccount account in detail.Accounts.Where(isMatch))
             {
                 matches.Add(Describe(account, detail.Batch, now));
             }
@@ -183,78 +229,4 @@ internal static partial class TestAccountLookup
 
     internal static bool IsExpired(DateTimeOffset? expiry, DateTimeOffset now) =>
         expiry is { } date && date < now;
-
-    /// <summary>
-    /// Keeps only the batches in a list response whose access expiry has passed, and applies
-    /// <paramref name="top"/> afterwards, so it means "the newest N expired batches" rather than
-    /// "the expired ones among the newest N".
-    /// </summary>
-    internal static string FilterExpired(string listJson, DateTimeOffset now, int? top)
-    {
-        JsonNode? root;
-        try
-        {
-            root = JsonNode.Parse(listJson);
-        }
-        catch (JsonException exception)
-        {
-            throw new InvalidDataException(
-                "The test account batch list response was not valid JSON.",
-                exception);
-        }
-
-        if (root is not JsonObject response || response["batches"] is not JsonArray batches)
-        {
-            throw new InvalidDataException(
-                "The test account batch list response must contain a 'batches' array.");
-        }
-
-        var kept = new List<JsonNode?>();
-        foreach (JsonNode? batch in batches)
-        {
-            if (batch is not JsonObject item)
-            {
-                throw new InvalidDataException(
-                    "The test account batch list response contains a batch that is not an object.");
-            }
-
-            if (IsExpired(ReadExpiry(item), now))
-            {
-                kept.Add(batch);
-            }
-        }
-
-        if (top is { } limit)
-        {
-            kept = [.. kept.Take(limit)];
-        }
-
-        var filtered = new JsonArray();
-        foreach (JsonNode? batch in kept)
-        {
-            filtered.Add(batch?.DeepClone());
-        }
-
-        response["batches"] = filtered;
-        return response.ToJsonString();
-    }
-
-    /// <summary>A missing or null expiry means none; any other unreadable value is an error.</summary>
-    private static DateTimeOffset? ReadExpiry(JsonObject batch)
-    {
-        if (batch["accessExpirationDate"] is not { } node)
-        {
-            return null;
-        }
-
-        if (node is JsonValue value &&
-            value.TryGetValue(out string? text) &&
-            DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expiry))
-        {
-            return expiry;
-        }
-
-        throw new InvalidDataException(
-            "The test account batch list response has a batch whose 'accessExpirationDate' is not a date.");
-    }
 }
