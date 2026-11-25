@@ -18,18 +18,18 @@ internal static partial class TestAccountCommandFactory
     private static Command CreateLookupCommand()
     {
         var sellerOption = new XdtsSellerOption();
-        var emailArgument = new Argument<TestAccountEmail>("email")
+        var accountArgument = new Argument<TestAccountKey>("email-or-xuid")
         {
-            Description = $"The test account email, for example ABCD-tester00000@{TestAccountLookup.Domain}.",
+            Description = $"The test account's email, for example ABCD-tester00000@{TestAccountLookup.Domain}, or its XUID, for example 2814600000000001.",
             CustomParser = result =>
             {
-                string? problem = TestAccountLookup.TryParse(result.Tokens.Count > 0 ? result.Tokens[0].Value : null, out var parsed);
+                string? problem = TestAccountLookup.TryParseKey(result.Tokens[0].Value, out var parsed);
                 if (problem is not null)
                 {
                     result.AddError(problem);
                 }
 
-                return parsed;
+                return parsed!;
             },
         };
 
@@ -43,19 +43,20 @@ internal static partial class TestAccountCommandFactory
             [
                 $"xbox test-account get ABCD-tester00000@{TestAccountLookup.Domain}",
                 $"xbox test-account get ABCD-tester00000@{TestAccountLookup.Domain} --output table",
+                "xbox test-account get 2814600000000001",
             ],
             table: XboxPartnerCommandSupport.TestAccountLookupView));
-        command.Arguments.Add(emailArgument);
+        command.Arguments.Add(accountArgument);
         sellerOption.AddTo(command);
         command.SetAction((ParseResult parseResult, CancellationToken cancellationToken) =>
         {
-            TestAccountEmail email = parseResult.GetRequiredValue(emailArgument);
+            var key = parseResult.GetValue(accountArgument)!;
             return InvokeAsync(
                 parseResult,
                 sellerOption,
-                $"Finding the test account batch for {email.Address} using the signed in Entra ID token",
+                $"Finding the test account batch for {key.Display} using the signed in Entra ID token",
                 (client, sellerId, stdout, stderr, output, token) =>
-                    RunLookupAsync(client, sellerId, email, parseResult, output, stdout, stderr, token),
+                    RunLookupAsync(client, sellerId, key, parseResult, output, stdout, stderr, token),
                 cancellationToken);
         });
         return command;
@@ -64,7 +65,7 @@ internal static partial class TestAccountCommandFactory
     internal static async Task<int> RunLookupAsync(
         XboxPartnerClient client,
         long? sellerId,
-        TestAccountEmail email,
+        TestAccountKey key,
         ParseResult parseResult,
         OutputOptions output,
         TextWriter stdout,
@@ -77,7 +78,7 @@ internal static partial class TestAccountCommandFactory
             outcome = await TestAccountLookup.FindAsync(
                 client,
                 sellerId,
-                email,
+                key,
                 Dependencies.GetUtcNow(),
                 cancellationToken).ConfigureAwait(false);
         }
@@ -92,31 +93,28 @@ internal static partial class TestAccountCommandFactory
         catch (XboxPartnerResponseException ex)
         {
             XboxPartnerCommandSupport.WriteCorrelationId(ex.CorrelationId, stderr);
-            stderr.WriteLine($"Request failed: {ex.Message}");
-            return 1;
-        }
-        catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
-        {
-            stderr.WriteLine($"Request failed: {ex.Message}");
+            stderr.WriteLine($"Request failed: {TerminalText.Message(ex.Message)}");
             return 1;
         }
 
+        string account = key.Display;
+        string withTemplate = key.Email is null ? string.Empty : " with this email template";
         if (outcome.Matches.Count == 0)
         {
             if (outcome.CandidateCount > outcome.BatchesRead)
             {
                 var commands = new RecoveryCommands(parseResult, sellerId);
                 stderr.WriteLine(
-                    $"{email.Address} was not found in the newest {outcome.BatchesRead} of " +
-                    $"{outcome.CandidateCount} batches with this email template; the older ones were not searched. " +
-                    "List the batches, then inspect the older ones with this template:");
+                    $"{account} was not found in the newest {outcome.BatchesRead} of " +
+                    $"{outcome.CandidateCount} batches{withTemplate}; the older ones were not searched. " +
+                    $"List the batches, then inspect the older ones{(key.Email is null ? string.Empty : " with this template")}:");
                 stderr.WriteLine("  " + commands.Build("batch", "list"));
                 stderr.WriteLine("  " + commands.Template("batch", "get", RecoveryCommands.BatchIdPlaceholder));
             }
             else
             {
                 stderr.WriteLine(
-                    $"{email.Address} was not found among the batches this seller can list. " +
+                    $"{account} was not found among the batches this seller can list. " +
                     "Batches created by other developers may not be listed; check --seller-id.");
             }
 
@@ -126,14 +124,14 @@ internal static partial class TestAccountCommandFactory
         if (outcome.CandidateCount > outcome.BatchesRead)
         {
             stderr.WriteLine(
-                $"Only the newest {outcome.BatchesRead} of {outcome.CandidateCount} batches with this " +
-                "email template were searched.");
+                $"Only the newest {outcome.BatchesRead} of {outcome.CandidateCount} batches{withTemplate} " +
+                "were searched.");
         }
 
         if (outcome.Matches.Count > 1)
         {
             var commands = new RecoveryCommands(parseResult, sellerId);
-            stderr.WriteLine($"{email.Address} appears in more than one batch. Inspect each with:");
+            stderr.WriteLine($"{account} appears in more than one batch. Inspect each with:");
             foreach (TestAccountLookupResult match in outcome.Matches)
             {
                 stderr.WriteLine("  " + commands.Build(
@@ -147,7 +145,7 @@ internal static partial class TestAccountCommandFactory
 
         if (outcome.Matches[0].Account.IsDeleted)
         {
-            stderr.WriteLine($"{email.Address} is deleted; its batch still lists it.");
+            stderr.WriteLine($"{account} is deleted; its batch still lists it.");
         }
 
         string json = JsonSerializer.Serialize(outcome.Matches[0], LookupJsonOptions);

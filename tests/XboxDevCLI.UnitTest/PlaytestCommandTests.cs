@@ -784,7 +784,7 @@ public class PlaytestCommandTests
             handler, "playtest", "create", "--store-id", Store, "--name", "Beta",
             "--start", "2026-11-01", "--end", "2026-11-02", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether the playtest 'Beta' was created", result.Stderr, StringComparison.Ordinal);
         var key = Assert.Single(handler.Requests[0].Headers["Idempotency-Key"]);
@@ -807,7 +807,7 @@ public class PlaytestCommandTests
             "--description", "", "--start", "2026-11-01T17:00:00+02:00", "--end", "2026-11-15",
             "--idempotency-key", PlaytestId, "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Equal(PlaytestId, Assert.Single(handler.Requests[1].Headers["Idempotency-Key"]));
         Assert.Contains(
             $"xbox playtest create --store-id {Store} --name {ShellQuoting.Quote("My sample playtest")} "
@@ -832,7 +832,7 @@ public class PlaytestCommandTests
             "--long-description", "Try the new arena.\r\nReport bugs in the forum.\r\n",
             "--start", "2026-11-01", "--end", "2026-11-02", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         var key = Assert.Single(handler.Requests[0].Headers["Idempotency-Key"]);
         Assert.Contains(
             $"To retry without creating a second playtest, run the same command again with --idempotency-key {key}.",
@@ -851,7 +851,7 @@ public class PlaytestCommandTests
             "playtest", "create", "--store-id", Store, "--name", "Beta",
             "--start", "2026-11-01", "--end", "2026-11-02", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether the playtest 'Beta' was created", result.Stderr, StringComparison.Ordinal);
         Assert.Contains(handler.CorrelationId!, result.Stderr, StringComparison.Ordinal);
@@ -865,10 +865,23 @@ public class PlaytestCommandTests
             handler,
             "playtest", "update", PlaytestId, "--store-id", Store, "--name", "Beta", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether it was applied", result.Stderr, StringComparison.Ordinal);
         Assert.Contains(handler.CorrelationId!, result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Update_FailureThatNeverReachedTheService_PrintsNoCorrelationId()
+    {
+        var handler = new ThrowingHandler(new HttpRequestException(HttpRequestError.NameResolutionError, "no such host"));
+        var result = await InvokeAsync(
+            handler,
+            "playtest", "update", PlaytestId, "--store-id", Store, "--name", "Beta", "--confirm");
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.NotNull(handler.CorrelationId);
+        Assert.DoesNotContain("x-ms-correlation-id", result.Stderr, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -881,7 +894,7 @@ public class PlaytestCommandTests
             handler, "playtest", "create", "--store-id", Store, "--name", "Beta",
             "--start", "2026-11-01", "--end", "2026-11-02", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         var sent = Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]);
         Assert.Contains("response-correlation", result.Stderr, StringComparison.Ordinal);
         Assert.DoesNotContain(sent, result.Stderr, StringComparison.Ordinal);
@@ -898,7 +911,7 @@ public class PlaytestCommandTests
             Handler(responseBody), "playtest", "create", "--store-id", Store, "--name", "Beta",
             "--start", "2026-11-01", "--end", "2026-11-02", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains($"playtest list --store-id {Store}", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("response-correlation", result.Stderr, StringComparison.Ordinal);
@@ -1104,7 +1117,7 @@ public class PlaytestCommandTests
             new XboxPartnerHttpMessageHandler(Response(body, status)),
             "playtest", "update", PlaytestId, "--store-id", Store, "--name", "Beta", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether it was applied", result.Stderr, StringComparison.Ordinal);
         Assert.Contains($"playtest get {PlaytestId} --store-id {Store}", result.Stderr, StringComparison.Ordinal);
@@ -1119,7 +1132,7 @@ public class PlaytestCommandTests
         var result = await InvokeAsync(
             Handler(responseBody), "playtest", "update", PlaytestId, "--store-id", Store, "--name", "Beta", "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains($"playtest get {PlaytestId} --store-id {Store}", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("response-correlation", result.Stderr, StringComparison.Ordinal);
@@ -1665,7 +1678,7 @@ public class PlaytestCommandTests
 
         var result = await InvokeAsync(handler, "playtest", verb, Playtest, "--store-id", Store, "--confirm");
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether it was queued", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("response-correlation", result.Stderr, StringComparison.Ordinal);
@@ -1689,7 +1702,7 @@ public class PlaytestCommandTests
 
         var result = await InvokeAsync(handler, arguments);
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Equal(verb == "publish" ? 3 : 2, handler.Requests.Count);
         Assert.Empty(result.Stdout);
         Assert.Contains("response-correlation", result.Stderr, StringComparison.Ordinal);
@@ -1949,7 +1962,7 @@ public class PlaytestCommandTests
     [Fact]
     public async Task Publish_ReadsKeepFailingWhileWaiting_ExitsWithFour()
     {
-        var failures = Enumerable.Range(0, TestAccountJobWaiter.MaxConsecutiveReadFailures)
+        var failures = Enumerable.Range(0, XboxPartnerPoller.MaxConsecutiveReadFailures)
             .Select(_ => Response("""{"status":502}""", HttpStatusCode.BadGateway));
         var handler = new XboxPartnerHttpMessageHandler(
             [Response(WithStatus("Draft")), Response(Ready), Response(Queued), .. failures]);
@@ -1957,7 +1970,7 @@ public class PlaytestCommandTests
         var result = await InvokeAsync(handler, "playtest", "publish", Playtest, "--store-id", Store, "--confirm");
 
         Assert.Equal(PlaytestCommandFactory.PublishNotFinishedExitCode, result.ExitCode);
-        Assert.Equal(3 + TestAccountJobWaiter.MaxConsecutiveReadFailures, handler.Requests.Count);
+        Assert.Equal(3 + XboxPartnerPoller.MaxConsecutiveReadFailures, handler.Requests.Count);
         Assert.Empty(result.Stdout);
         Assert.Contains($"Could not read playtest {Playtest}.", result.Stderr, StringComparison.Ordinal);
         Assert.Contains($"playtest get {Playtest} --store-id {Store}", result.Stderr, StringComparison.Ordinal);

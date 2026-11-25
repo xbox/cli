@@ -250,17 +250,82 @@ public class AudienceCommandTests
     }
 
     [Fact]
-    public async Task Get_RendersTheDeclaredRecordTable()
+    public async Task Get_RendersARowPerReturnedMember()
     {
-        var result = await InvokeAsync(Handler(Testers), ["audience", "get", Id, "--output", "table"]);
+        var withUnsafe = Testers.Replace("Tester@NodPublishers.com", "Tester@NodPublishers.com\\n\\u001b[31mx");
+        var result = await InvokeAsync(Handler(withUnsafe), ["audience", "get", Id, "--output", "table"]);
 
         Assert.Equal(0, result.ExitCode);
         var lines = result.Stdout.TrimEnd().Split(Environment.NewLine);
-        Assert.Contains("TYPE", lines[0]);
-        Assert.DoesNotContain("UPDATED", lines[0]);
-        Assert.Contains(Id, lines[2]);
-        Assert.Contains("User", lines[2]);
-        Assert.DoesNotContain("dev@nodpublishers.com", result.Stdout);
+        Assert.Equal(4, lines.Length);
+        Assert.Matches(@"^ID\s+NAME\s+TYPE\s+MEMBERS\s+MEMBER$", lines[0]);
+        Assert.Matches($@"^{Id}\s+Nod Arena testers\s+User\s+2\s+dev@nodpublishers\.com$", lines[2]);
+        Assert.Matches($@"^{Id}\s+Nod Arena testers\s+User\s+2\s+Tester@NodPublishers\.com  \[31mx$", lines[3]);
+        Assert.All(lines, line => Assert.DoesNotContain(line, char.IsControl));
+    }
+
+    [Fact]
+    public async Task Get_AnAudienceWithNoMembersHasOneRow()
+    {
+        var result = await InvokeAsync(Handler(Devices), ["audience", "get", SecondId, "--output", "table"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var lines = result.Stdout.TrimEnd().Split(Environment.NewLine);
+        Assert.Equal(3, lines.Length);
+        Assert.Matches($@"^{SecondId}\s+-\s+-\s+0\s+-$", lines[2]);
+    }
+
+    [Fact]
+    public async Task Get_MembersOnlyWritesAMembersFileThatReadsBackUnchanged()
+    {
+        var result = await InvokeAsync(Handler(Testers), ["audience", "get", Id, "--members-only"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal($"dev@nodpublishers.com{Environment.NewLine}Tester@NodPublishers.com{Environment.NewLine}", result.Stdout);
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, result.Stdout);
+            Assert.Equal(["dev@nodpublishers.com", "Tester@NodPublishers.com"], AudienceCommandFactory.ReadMembersFile(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Get_MembersOnlyWritesNothingForNoMembers()
+    {
+        var result = await InvokeAsync(Handler(Devices), ["audience", "get", SecondId, "--members-only"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Empty(result.Stdout);
+    }
+
+    [Fact]
+    public async Task Get_MembersOnlyFailsWithoutAMembersList()
+    {
+        var result = await InvokeAsync(Handler("""{"id":"1"}"""), ["audience", "get", "1", "--members-only"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Contains("has no members list", result.Stderr);
+    }
+
+    [Theory]
+    [InlineData("json")]
+    [InlineData("table")]
+    public async Task Get_MembersOnlyCantBeCombinedWithOutput(string format)
+    {
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(handler, ["audience", "get", Id, "--members-only", "--output", format]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Contains("--members-only can't be combined with --output", result.Stderr);
+        Assert.Contains("Remove --output, or drop --members-only to get the whole audience.", result.Stderr);
+        Assert.Empty(handler.Requests);
     }
 
     [Theory]
@@ -410,8 +475,7 @@ public class AudienceCommandTests
     [Fact]
     public async Task Verbose_WritesIdsSafeForTheTerminal()
     {
-        var result = await InvokeAsync(
-            Handler(Testers), ["audience", "get", Id + "\u001b[31m", "--verbose"], sellerId: "1234567\u0007");
+        var result = await InvokeAsync(Handler(Testers), ["audience", "get", Id + "\u001b[31m\u0007", "--verbose"]);
 
         Assert.DoesNotContain('\u001b', result.Stderr);
         Assert.DoesNotContain('\u0007', result.Stderr);
@@ -491,7 +555,7 @@ public class AudienceCommandTests
     [Fact]
     public async Task Create_PostsTheNameAndTrimmedMembersOnce()
     {
-        var file = MembersFile([.. "\uFEFF"u8.ToArray(), .. "  dev@nodpublishers.com \r\n\r\n \nTester@NodPublishers.com"u8.ToArray()]);
+        var file = MembersFile([.. "\uFEFF"u8.ToArray(), .. "  dev@nodpublishers.com \r\n\r\n \nTester@NodPublishers.com\nDev@nodpublishers.com"u8.ToArray()]);
         var handler = new XboxPartnerHttpMessageHandler(Response(Testers, HttpStatusCode.Created));
         var result = await InvokeAsync(
             handler, ["audience", "create", "--name", "Nod Arena testers", "--members-file", file, "-y", "--output", "json-compact"]);
@@ -505,6 +569,17 @@ public class AudienceCommandTests
         Assert.Equal(
             """{"name":"Nod Arena testers","members":["dev@nodpublishers.com","Tester@NodPublishers.com"]}""",
             request.Body);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReadMembersFile_ReadsUtf16WithAByteOrderMark(bool bigEndian)
+    {
+        var file = MembersFile(new System.Text.UnicodeEncoding(bigEndian, byteOrderMark: true)
+            .GetPreamble().Concat(new System.Text.UnicodeEncoding(bigEndian, false).GetBytes("dev@nodpublishers.com\r\nTester@NodPublishers.com\r\n")).ToArray());
+
+        Assert.Equal(["dev@nodpublishers.com", "Tester@NodPublishers.com"], AudienceCommandFactory.ReadMembersFile(file));
     }
 
     [Fact]
@@ -594,6 +669,61 @@ public class AudienceCommandTests
     }
 
     [Theory]
+    [InlineData("create")]
+    [InlineData("update")]
+    public async Task MembersFileProblems_NameTheirPhysicalLinesAndSendNothing(string command)
+    {
+        var file = MembersFile(System.Text.Encoding.UTF8.GetBytes(string.Join("\n",
+            "dev@nodpublishers.com", "", "  ", "Dev Lead <lead@nodpublishers.com>", "tester@nodpublishers.com",
+            "nodpublishers.com", "", " qa\u200B@nodpublishers.com ", "DEV@NodPublishers.com",
+            "q\U000E0041a@nodpublishers.com")));
+        string[] arguments = command == "create"
+            ? ["audience", "create", "--name", "Nod Rally", "--members-file", file, "-y"]
+            : ["audience", "update", Id, "--members-file", file, "-y"];
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(handler, arguments);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(handler.Requests);
+        Assert.Empty(result.Stdout);
+        Assert.EndsWith(
+            string.Join(Environment.NewLine,
+                $"The members file '{file}' has lines to fix, so nothing was sent:",
+                "  line 4: not a plain email address",
+                "  line 6: not a plain email address",
+                "  line 8: has an invisible character",
+                "  line 10: has an invisible character"),
+            result.Stderr.Trim());
+    }
+
+    [Fact]
+    public async Task MembersFileProblems_AreNamedBeforeTheMemberLimit()
+    {
+        var file = MembersFile(System.Text.Encoding.UTF8.GetBytes(string.Join("\n",
+            Enumerable.Range(0, 1000).Select(i => $"p{i}@nodpublishers.com").Prepend("Email"))));
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(handler, ["audience", "update", Id, "--members-file", file, "-y"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(handler.Requests);
+        Assert.Contains("line 1: not a plain email address", result.Stderr);
+    }
+
+    [Fact]
+    public async Task MembersFileProblems_ListTenAndCountTheRest()
+    {
+        var file = MembersFile(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", Enumerable.Repeat("dev", 12))));
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(handler, ["audience", "update", Id, "--members-file", file, "-y"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(handler.Requests);
+        Assert.Contains("line 10: not a plain email address", result.Stderr);
+        Assert.DoesNotContain("line 11", result.Stderr);
+        Assert.Contains("and 2 more", result.Stderr);
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.BadGateway, "downstream_request_rejected", "Partner Center rejected the request")]
     [InlineData(HttpStatusCode.BadGateway, "audience_update_preflight_failed", "couldn't be checked")]
     [InlineData(HttpStatusCode.ServiceUnavailable, "audience_write_not_available", "aren't available right now")]
@@ -646,7 +776,7 @@ public class AudienceCommandTests
         var file = MembersFile("dev@nodpublishers.com"u8.ToArray());
         var result = await InvokeAsync(handler, ["audience", "create", "--name", "Nod Rally", "--members-file", file, "-y"]);
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("it is unknown whether", result.Stderr);
         Assert.Contains("xbox audience list --name", result.Stderr);
@@ -673,7 +803,7 @@ public class AudienceCommandTests
 
         var result = await InvokeAsync(handler, WriteArguments(command), cancellationToken: cancellation.Token);
 
-        Assert.Equal(PlaytestCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Equal(1, handler.Requests);
         Assert.Contains("it is unknown whether", result.Stderr);
@@ -707,6 +837,111 @@ public class AudienceCommandTests
     private static string[] WriteArguments(string command) => command == "create"
         ? ["audience", "create", "--name", "Nod Rally", "--members-file", MembersFile([]), "-y"]
         : ["audience", "update", Id, "--members-file", MembersFile([]), "-y"];
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UpdateDryRun_ReadsTheAudienceWritesTheChangesAndSendsNoWrite(bool confirm)
+    {
+        var file = MembersFile("DEV@nodpublishers.com\nnew@nodpublishers.com\nNew@nodpublishers.com"u8.ToArray());
+        string[] arguments = ["audience", "update", Id, "--name", "Nod Arena beta testers", "--members-file", file,
+            "--dry-run", "--output", "json-compact"];
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(handler, confirm ? [.. arguments, "-y"] : arguments);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(
+            $$$"""{"id":"{{{Id}}}","name":{"current":"Nod Arena testers","new":"Nod Arena beta testers"},"members":{"currentCount":2,"newCount":2,"added":["new@nodpublishers.com"],"removed":["Tester@NodPublishers.com"]}}""",
+            result.Stdout.Trim());
+        Assert.Contains($"Dry run: audience {Id} under seller seller-1 wasn't changed.", result.Stderr);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Null(request.Body);
+    }
+
+    [Fact]
+    public async Task UpdateDryRun_WithOnlyAName_LeavesMembersOut()
+    {
+        var handler = Handler(Devices);
+        var result = await InvokeAsync(
+            handler, ["audience", "update", SecondId, "--name", "Nod Rally", "--dry-run", "--output", "json-compact"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal($$$"""{"id":"{{{SecondId}}}","name":{"current":null,"new":"Nod Rally"}}""", result.Stdout.Trim());
+        Assert.Equal(HttpMethod.Get, Assert.Single(handler.Requests).Method);
+    }
+
+    [Fact]
+    public async Task UpdateDryRun_RefusesTableOutputBeforeAnyRequest()
+    {
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(
+            handler, ["audience", "update", Id, "--members-file", MembersFile([]), "--dry-run", "--output", "table"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Contains("--dry-run writes JSON only", result.Stderr);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task UpdateConfirmedInATerminal_SendsOnlyTheUpdate()
+    {
+        var handler = Handler(Testers);
+        var result = await InvokeAsync(
+            handler, ["audience", "update", Id, "--members-file", MembersFile([]), "-y"], interactive: true);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(HttpMethod.Patch, Assert.Single(handler.Requests).Method);
+    }
+
+    [Theory]
+    [InlineData("n", false)]
+    [InlineData("y", true)]
+    public async Task UpdatePrompt_ShowsTheRenameAndMemberChangesBeforeAsking(string answer, bool written)
+    {
+        var file = MembersFile("dev@nodpublishers.com\nnew@nodpublishers.com"u8.ToArray());
+        var handler = Handler(Testers, Testers);
+        var result = await InvokeAsync(
+            handler, ["audience", "update", Id, "--name", "Nod Arena beta testers", "--members-file", file, "--output", "json-compact"],
+            interactive: true, input: answer);
+
+        Assert.Equal(written ? 0 : 1, result.ExitCode);
+        var prompt = result.Stderr[..result.Stderr.IndexOf("Change this audience?", StringComparison.Ordinal)];
+        Assert.Contains("Renaming it from 'Nod Arena testers' to 'Nod Arena beta testers'.", prompt);
+        Assert.Contains("Replacing its 2 members with 2 members: 1 added, 1 removed.", prompt);
+        Assert.Contains("+ new@nodpublishers.com", prompt);
+        Assert.Contains("- Tester@NodPublishers.com", prompt);
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+        if (written)
+        {
+            Assert.Equal(2, handler.Requests.Count);
+            Assert.Equal(HttpMethod.Patch, handler.Requests[1].Method);
+            Assert.Equal(AsGot(Testers), result.Stdout.Trim());
+        }
+        else
+        {
+            Assert.Single(handler.Requests);
+            Assert.Empty(result.Stdout);
+        }
+    }
+
+    [Fact]
+    public async Task UpdatePrompt_ListsAFewMembersAndPointsToDryRunForTheRest()
+    {
+        var added = Enumerable.Range(0, AudienceCommandFactory.MaxPromptedMembers + 2).Select(i => $"p{i}@nodpublishers.com");
+        var file = MembersFile(System.Text.Encoding.UTF8.GetBytes(string.Join("\n", added)));
+        var handler = Handler(Devices);
+        var result = await InvokeAsync(
+            handler, ["audience", "update", SecondId, "--members-file", file], interactive: true, input: "n");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains($"+ p{AudienceCommandFactory.MaxPromptedMembers - 1}@nodpublishers.com", result.Stderr);
+        Assert.DoesNotContain($"p{AudienceCommandFactory.MaxPromptedMembers}@nodpublishers.com", result.Stderr);
+        Assert.Contains("+ ...and 2 more", result.Stderr);
+        Assert.Contains("Run with --dry-run to list every change.", result.Stderr);
+        Assert.Single(handler.Requests);
+    }
 
     [Theory]
     [InlineData("create", "xbox audience create --name \"Nod Arena testers\"")]
@@ -766,13 +1001,15 @@ public class AudienceCommandTests
         Mock<AuthenticationService>? auth = null,
         string? sellerId = "seller-1",
         bool addScope = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool interactive = false,
+        string? input = null)
     {
         auth ??= CreateAuth();
         using var httpClient = new HttpClient(handler);
         var root = Program.BuildRootCommand(audienceCommandFactory: () => AudienceCommandFactory.Create(
             configuration => new XboxPartnerClient(configuration, httpClient, auth.Object),
-            new XboxPartnerJobDependencies((_, _) => Task.CompletedTask, () => DateTimeOffset.UtcNow, () => false)));
+            new XboxPartnerJobDependencies((_, _) => Task.CompletedTask, () => DateTimeOffset.UtcNow, () => interactive)));
         var args = new List<string>(arguments);
         if (addScope)
         {
@@ -785,12 +1022,17 @@ public class AudienceCommandTests
 
         var oldOut = Console.Out;
         var oldError = Console.Error;
+        var oldIn = Console.In;
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
         try
         {
             Console.SetOut(stdout);
             Console.SetError(stderr);
+            if (input is not null)
+            {
+                Console.SetIn(new StringReader(input + Environment.NewLine));
+            }
             ContextResolver.ReadIdentityAsync = _ => SignedInIdentity.FromCacheAsync(auth.Object, CancellationToken.None);
             ContextStore.DefaultDirectory = () => Path.Combine(Path.GetTempPath(), $"audience-tests-{Guid.NewGuid():N}");
 
@@ -804,6 +1046,7 @@ public class AudienceCommandTests
         {
             Console.SetOut(oldOut);
             Console.SetError(oldError);
+            Console.SetIn(oldIn);
             TestEnvironment.Reset();
         }
     }

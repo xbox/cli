@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
+using System.CommandLine.Completions;
 using System.CommandLine.Help;
+using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
 using System.Diagnostics;
 using System.Globalization;
@@ -43,30 +45,6 @@ public class Program
         new() { ResponseFileTokenReplacer = null };
 
     // Global options available to all commands
-
-    /// <summary>
-    /// Earlier releases loaded <c>appsettings.{environment}.json</c> from beside the executable.
-    /// Hidden, and kept only to tell anyone who still passes it what replaced it.
-    /// </summary>
-    internal static readonly Option<string> ConfigEnvOption = CreateRetiredConfigEnvOption();
-
-    internal const string ConfigEnvRetiredMessage =
-        "--config-env is no longer supported because settings files are no longer read. "
-        + "Set XBOX_ environment variables instead, such as XBOX_AZUREAD__CLIENTID.";
-
-    private static Option<string> CreateRetiredConfigEnvOption()
-    {
-        var option = new Option<string>("--config-env")
-        {
-            Description = "No longer supported. Set XBOX_ environment variables instead.",
-            HelpName = "environment",
-            Recursive = true,
-            Hidden = true,
-        };
-        option.Validators.Add(result => result.AddError(ConfigEnvRetiredMessage));
-        return option;
-    }
-
     internal static readonly Option<string?> ClientIdOption = new("--client-id")
     {
         Description = "Override the Microsoft Entra application client ID for user sign-in; refused in automation modes.",
@@ -163,6 +141,7 @@ public class Program
         };
 
         option.Validators.Add(result => ValidateAllowedValue(result, "json", "json-compact", "table"));
+        option.CompletionSources.Add("json", "json-compact", "table");
         return option;
     }
 
@@ -211,10 +190,18 @@ public class Program
     {
         var rootCommand = BuildRootCommand();
         var parseResult = rootCommand.Parse(args, NoResponseFileConfig);
+
+        // A shell's completion query (`xbox [suggest:N] "..."`) runs on every Tab press, so it
+        // answers from the command tree alone: no welcome, telemetry, configuration, or sign-in.
+        if (IsCompletionQuery(rootCommand, parseResult))
+        {
+            return await parseResult.InvokeAsync();
+        }
+
         // Captures the authentication inputs once, for preparation, context, the command, and
         // telemetry. Nothing is validated yet.
         var invocation = GetInvocation(parseResult);
-        var verbose = parseResult.GetValue(VerboseOption);
+        var verbose = parseResult.GetFlag(VerboseOption);
         // Read before context resolution adds values from the environment or saved context, which
         // the user didn't supply as options.
         var suppliedOptions = TelemetryInstrumentation.GetSuppliedOptions(parseResult);
@@ -224,7 +211,7 @@ public class Program
         var stopwatch = Stopwatch.StartNew();
         var invocationTelemetry = TelemetryRecorder.Start();
         var telemetry = TelemetryService.Create(
-            GetTelemetryConfiguration(parseResult),
+            invocation.LoadedConfiguration.Configuration,
             message => WriteVerbose(verbose, () => message));
         if (CommandLineErrorWriter.TryWriteUnknownCommand(
                 parseResult,
@@ -296,6 +283,19 @@ public class Program
                     invocationTelemetry.SetError(TelemetryErrorTypes.Usage);
                     return exitCode;
                 }
+            }
+
+            // A parse or validation error goes to stderr with a usage line, never Help on stdout,
+            // which a script would read as the command's result.
+            if (parseResult.Action is ParseErrorAction)
+            {
+                exitCode = CommandLineErrorWriter.WriteParseErrors(
+                    parseResult,
+                    rootCommand,
+                    CliIdentity.CommandName,
+                    Console.Error);
+                invocationTelemetry.SetError(TelemetryErrorTypes.Usage);
+                return exitCode;
             }
 
             exitCode = await parseResult.InvokeAsync();
@@ -376,7 +376,7 @@ public class Program
         catch (Exception exception)
         {
             WriteVerbose(
-                parseResult.GetValue(VerboseOption),
+                parseResult.GetFlag(VerboseOption),
                 () => $"Telemetry could not be sent ({TelemetryInstrumentation.ClassifyException(exception)}).");
         }
     }
@@ -384,6 +384,9 @@ public class Program
     private static bool IsVersionRequested(ParseResult parseResult, IReadOnlyList<string> arguments) =>
         parseResult.CommandResult.Command is RootCommand
         && arguments.Any(argument => argument == "--version");
+
+    private static bool IsCompletionQuery(RootCommand rootCommand, ParseResult parseResult) =>
+        rootCommand.Directives.OfType<SuggestDirective>().Any(directive => parseResult.GetResult(directive) is not null);
 
     /// <summary>
     /// Returns whether <paramref name="command"/> can render its response as a table.
@@ -476,7 +479,6 @@ public class Program
     {
         var rootCommand = new RootCommand(
             $"{CliIdentity.DisplayName}: {CliIdentity.Tagline}");
-        rootCommand.Options.Add(ConfigEnvOption);
         rootCommand.Options.Add(ClientIdOption);
         rootCommand.Options.Add(TenantIdOption);
         rootCommand.Options.Add(ScopesOption);
@@ -494,10 +496,10 @@ public class Program
         rootCommand.Subcommands.Add(
             (contextCommandFactory ?? ContextCommandFactory.Create).Invoke()
                 .WithMetadata(new CommandMetadata(Category: HelpCategory.Core)));
-        rootCommand.Subcommands.Add(InfoCommandFactory.Create()
-            .WithMetadata(new CommandMetadata(Category: HelpCategory.Support)));
+        rootCommand.Subcommands.Add(InfoCommandFactory.Create());
         rootCommand.Subcommands.Add(UpgradeCommandFactory.Create());
         rootCommand.Subcommands.Add(FeedbackCommandFactory.Create());
+        rootCommand.Subcommands.Add(CompletionCommandFactory.Create());
         rootCommand.Subcommands.Add(
             (gameCommandFactory ?? GameCommandFactory.Create).Invoke()
                 .WithMetadata(new CommandMetadata(Category: HelpCategory.Core)));
@@ -521,6 +523,10 @@ public class Program
                 LearnMore: [PackageCommandFactory.UploadLearnMore])));
         rootCommand.Subcommands.Add((playtestCommandFactory ?? PlaytestCommandFactory.Create).Invoke()
             .WithMetadata(new CommandMetadata(Category: HelpCategory.Core)));
+        rootCommand.Subcommands.Add(StoreListingCommandFactory.Create()
+            .WithMetadata(new CommandMetadata(
+                Category: HelpCategory.Core,
+                Stage: CommandStage.Experimental)));
         rootCommand.Subcommands.Add((pcCommandFactory ?? PcCommandFactory.Create).Invoke()
             .WithMetadata(new CommandMetadata(
                 Category: HelpCategory.Core,
@@ -544,7 +550,7 @@ public class Program
         Invocations.GetValue(
             parseResult,
             static result => new Lazy<CommandInvocation>(
-                () => new CommandInvocation(result, () => LayerConfiguration(result)))).Value;
+                () => new CommandInvocation(result, LayerConfiguration(result)))).Value;
 
     /// <summary>
     /// Prepares what <paramref name="parseResult"/>'s command declares it needs
@@ -555,51 +561,24 @@ public class Program
     /// </summary>
     internal static void Prepare(ParseResult parseResult)
     {
-        var command = parseResult.CommandResult.Command;
-        var endpoints = CommandEndpoints.For(command);
+        var endpoints = CommandEndpoints.For(parseResult);
         if (ContextResolver.GetApiPath(parseResult) is { } apiPath)
         {
             endpoints &= PlayFabApiClient.IsStudioPath(apiPath) ? ServiceEndpoints.PlayFabStudio : ServiceEndpoints.PlayFab;
         }
 
-        GetInvocation(parseResult).Prepare(CommandRequirements.For(command), endpoints);
+        GetInvocation(parseResult).Prepare(CommandRequirements.For(parseResult), endpoints);
     }
 
     /// <summary>
-    /// The invocation's loaded configuration, or the error loading it, for a test of its layering:
+    /// The invocation's loaded configuration, for a test of its layering:
     ///   1. The built-in settings (<see cref="BuiltInSettings"/>), embedded in the executable
     ///   2. Environment variables prefixed with XBOX_, with <c>__</c> separating sections
     ///   3. CLI option overrides (highest priority)
     /// No settings file is read. Commands use <see cref="GetConfiguration"/>.
     /// </summary>
     internal static IConfiguration LoadConfiguration(ParseResult parseResult) =>
-        GetInvocation(parseResult).LoadConfiguration();
-
-    /// <summary>
-    /// The settings telemetry reads: the invocation's loaded configuration, or, if it couldn't be
-    /// loaded, the <c>XBOX_</c> environment variables and <c>--disable-telemetry</c> over
-    /// telemetry's defaults, so a preparation failure is still recorded unless the user opted out.
-    /// Telemetry never reports the configuration's error or warnings; preparation does, for a
-    /// command that uses them.
-    /// </summary>
-    internal static IConfiguration GetTelemetryConfiguration(ParseResult parseResult)
-    {
-        if (GetInvocation(parseResult).LoadedConfiguration.Configuration is { } configuration)
-        {
-            return configuration;
-        }
-
-        var builder = new ConfigurationBuilder().AddEnvironmentVariables("XBOX_");
-        if (parseResult.GetValue(DisableTelemetryOption))
-        {
-            builder.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Telemetry:Enabled"] = bool.FalseString,
-            });
-        }
-
-        return builder.Build();
-    }
+        GetInvocation(parseResult).LoadedConfiguration.Configuration;
 
     /// <summary>The invocation's prepared configuration snapshot.</summary>
     internal static IConfiguration GetConfiguration(ParseResult parseResult) =>
@@ -663,19 +642,19 @@ public class Program
         // Apply CLI overrides last so they win over everything else
         var overrides = new Dictionary<string, string?>();
 
-        var clientId = parseResult.GetValue(ClientIdOption);
+        var clientId = GetTokenValue(parseResult, ClientIdOption);
         if (clientId != null)
         {
             overrides["AzureAd:ClientId"] = clientId;
         }
 
-        var tenantId = parseResult.GetValue(TenantIdOption);
+        var tenantId = GetTokenValue(parseResult, TenantIdOption);
         if (tenantId != null)
         {
             overrides["AzureAd:TenantId"] = tenantId;
         }
 
-        var scopes = parseResult.GetValue(ScopesOption);
+        var scopes = GetTokenValue(parseResult, ScopesOption);
         if (scopes != null)
         {
             overrides["AzureAd:Scopes"] = scopes;
@@ -683,14 +662,14 @@ public class Program
 
         // Set even without the flag, so the built-in settings and XBOX_PLAYFAB__TITLEID can't set
         // the title. ContextResolver fills the flag in from XBOX_PLAYFAB_TITLE_ID or saved context.
-        overrides["PlayFab:TitleId"] = parseResult.GetValue(PlayFabTitleIdOption)?.Trim();
+        overrides["PlayFab:TitleId"] = GetTokenValue(parseResult, PlayFabTitleIdOption)?.Trim();
 
         if (XboxPartnerCommandSupport.GetBaseUrlOptionValue(parseResult) is { } baseUrl)
         {
             overrides[EndpointOverrideWarning.XboxPartnerConfigurationKey] = baseUrl;
         }
 
-        if (parseResult.GetValue(DisableTelemetryOption))
+        if (parseResult.GetFlag(DisableTelemetryOption))
         {
             overrides["Telemetry:Enabled"] = bool.FalseString;
         }
@@ -702,6 +681,15 @@ public class Program
 
         return builder.Build();
     }
+
+    /// <summary>
+    /// The value typed for <paramref name="option"/>, read from its token rather than converted.
+    /// Converting a value the parser rejected throws, even when Help clears the error, as in
+    /// <c>--tenant-id a --tenant-id b --help</c>. A rejected option's value is never used, because
+    /// the invocation then reports the error or shows Help.
+    /// </summary>
+    private static string? GetTokenValue(ParseResult parseResult, Option<string?> option) =>
+        parseResult.GetResult(option)?.Tokens.FirstOrDefault()?.Value;
 
 
     /// <summary>

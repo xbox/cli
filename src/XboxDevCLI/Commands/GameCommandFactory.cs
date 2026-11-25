@@ -433,6 +433,7 @@ internal static class GameCommandFactory
             Arity = ArgumentArity.OneOrMore,
             AllowMultipleArgumentsPerToken = false,
         };
+        devices.CompletionSources.Add("xbox", "desktop");
         var sandbox = new Option<string?>("--sandbox-id")
         {
             Description = "Primary development sandbox ID.",
@@ -467,7 +468,7 @@ internal static class GameCommandFactory
                     Program.WriteVerbose(result.GetValue(Program.VerboseOption),
                         () => $"Submitting game creation for seller {sellerId}.");
                     XboxPartnerGameCreationJob job;
-                    var sent = false;
+                    string? sentCorrelationId = null;
                     try
                     {
                         Console.Error.WriteLine("Submitting game creation job...");
@@ -476,29 +477,34 @@ internal static class GameCommandFactory
                             url, sellerId,
                             new CreateXboxGameRequest(gameName, deviceFamilies, result.GetValue(sandbox)),
                             cancellationToken,
-                            onSending: () => sent = true);
+                            onSending: correlationId => sentCorrelationId = correlationId);
                     }
-                    catch (OperationCanceledException) when (!sent && cancellationToken.IsCancellationRequested)
+                    catch (OperationCanceledException) when (sentCorrelationId is null && cancellationToken.IsCancellationRequested)
                     {
                         Console.Error.WriteLine("Canceled before the request was sent, so no game was created.");
                         return 1;
                     }
-                    catch (Exception exception) when (!sent || IsRefused(exception))
+                    catch (Exception exception) when (sentCorrelationId is null || IsRefused(exception))
                     {
                         Console.Error.WriteLine(
-                            (sent ? "The service didn't accept the request" : "The request wasn't sent") +
+                            (sentCorrelationId is not null ? "The service didn't accept the request" : "The request wasn't sent") +
                             ", so no game was created. It's safe to address the error and run the create again.");
                         throw;
                     }
-                    catch (Exception exception) when (exception is OperationCanceledException
-                        or HttpRequestException or IOException or InvalidOperationException
-                        or XboxPartnerResponseException or XboxPartnerApiException)
+                    // Sent and not refused, so the game might have been created.
+                    catch (Exception exception)
                     {
                         Console.Error.WriteLine(
                             "Game creation was interrupted or its response could not be verified; " +
                             "it is unknown whether the game was created. Do not resubmit.");
                         var recovery = BuildGameRecoveryCommand(result, sellerId);
                         Console.Error.WriteLine($"Check its status with: {recovery}");
+                        // Ctrl+C isn't reported as an error, so the request's ID is written here to trace it.
+                        if (XboxPartnerCommandSupport.IsCallerCancellation(exception, cancellationToken))
+                        {
+                            XboxPartnerCommandSupport.WriteCorrelationId(sentCorrelationId, Console.Error);
+                        }
+
                         throw;
                     }
 
@@ -517,13 +523,14 @@ internal static class GameCommandFactory
             Scope: "Creates a game for --seller-id, XBOX_SELLER_ID, or the seller saved by 'context set'.",
             Output: "The game creation job object as JSON. Submission progress, job ID, correlation ID, " +
                 "and recovery commands go to stderr.",
-            SafetyDetails: "Creates production state and cannot be undone from the CLI. Requires " +
+            SafetyDetails: "Creates production state that cannot be deleted by the CLI or in Partner Center. Requires " +
                 "--confirm (--yes, -y) or terminal confirmation. " +
                 "Submission is never retried. Agent approval is still required.",
             LearnMore:
             [
                 "Use 'xbox game job get <job-id>' to check an existing creation job without submitting again.",
-                "Waits up to 120 seconds, polling every 5 seconds unless the service supplies Retry-After. " +
+                "Waits up to 120 seconds, polling every 5 seconds unless the service supplies Retry-After, " +
+                "and retries brief failures reading the job's status. " +
                 "If the wait ends, the command returns the accepted job and exits 0; creation might still be running. " +
                 "Exit 2 means the job ended without creating the game. Exit 1 means submission or status checking failed, " +
                 "not necessarily that creation failed. Follow the recovery instructions on stderr before retrying.",
@@ -694,7 +701,7 @@ internal static class GameCommandFactory
         }
 
         Console.Error.WriteLine(
-            $"Creating the game '{name}' under seller {sellerId} is irreversible from this CLI.");
+            $"The game '{name}' under seller {sellerId} cannot be deleted after it is created.");
         if (!dependencies.IsInteractive())
         {
             Console.Error.WriteLine(
@@ -732,16 +739,13 @@ internal static class GameCommandFactory
     }
 
     /// <summary>
-    /// Whether the service answered the create without creating a game: a client error other than
-    /// 408, which is a timeout, or a 504 whose code says the service timed out checking the sandbox
-    /// before it submitted anything. Any other failure, such as a server error, a redirect, or a
-    /// broken connection, can come after Partner Center took the job.
+    /// Whether the service answered the create without creating a game: a definite rejection, or a
+    /// 504 whose code says the service timed out checking the sandbox before it submitted anything.
     /// </summary>
     private static bool IsRefused(Exception exception) =>
-        exception is XboxPartnerApiException api &&
-        (((int)api.StatusCode is >= 400 and < 500 && api.StatusCode != HttpStatusCode.RequestTimeout) ||
-            (api.StatusCode == HttpStatusCode.GatewayTimeout &&
-                TestAccountCommandFactory.ReadProblemString(api.ResponseBody, "code") == "sandbox_check_timeout"));
+        !XboxPartnerCommandSupport.IsUncertainSubmission(exception) ||
+        (exception is XboxPartnerApiException { StatusCode: HttpStatusCode.GatewayTimeout } api &&
+            TestAccountCommandFactory.ReadProblemString(api.ResponseBody, "code") == "sandbox_check_timeout");
 
     private static bool CanPrintJobId(string jobId) => XboxPartnerCommandSupport.ForTerminal(jobId) == jobId;
 

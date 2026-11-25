@@ -175,22 +175,25 @@ public class TableOutputWiringTests
     }
 
     /// <summary>
-    /// A member list that isn't a list fails the command, rather than succeeding with a row that
-    /// shows the role as having no members.
+    /// A response without the shape the view declares fails the command with one line on stderr,
+    /// rather than succeeding with a table that misstates it, such as a role without members.
     /// </summary>
-    [Fact]
-    public async Task RegisteredGroupMemberList_FailsWhenAMemberListIsNotAnArray()
+    [Theory]
+    [InlineData("{}", "Operation is not valid due to the current state of the object.")]
+    [InlineData(
+        """{"Members":[{"RoleId":"admins","Members":{"Key":{"Id":"TITLEPLAYER123","Type":"title_player_account"}}}]}""",
+        "requires an element of type 'Array'")]
+    [InlineData("""{"Members":[{"RoleId":"admins","Members":[null]}]}""", "requires an element of type 'Object'")]
+    public async Task RegisteredGroupMemberList_FailsWhenTheResponseHasTheWrongShape(string data, string error)
     {
-        const string Response =
-            """{"code":200,"status":"OK","data":{"Members":[{"RoleId":"admins","Members":{"Key":{"Id":"TITLEPLAYER123","Type":"title_player_account"}}}]}}""";
-
         var result = await InvokeRegisteredActionAsync(
-            Response,
+            $$"""{"code":200,"status":"OK","data":{{data}}}""",
             ["playfab", "group", "member", "list", "--group-id", "GROUP123", "--output", "table"]);
 
         Assert.Equal(1, result.ExitCode);
         Assert.Equal(string.Empty, result.Stdout);
-        Assert.Contains("'Members' is an object rather than an array", result.Stderr, StringComparison.Ordinal);
+        var line = Assert.Single(result.Stderr.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries));
+        Assert.Contains(error, line, StringComparison.Ordinal);
     }
 
     /// <summary>Invitations and applications are separate lists, so the real command merges them.</summary>

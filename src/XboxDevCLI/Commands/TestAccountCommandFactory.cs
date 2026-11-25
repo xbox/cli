@@ -138,18 +138,9 @@ internal static partial class TestAccountCommandFactory
         {
             // Test whether --created-by-id was given rather than reading it: GetValue throws when
             // the value didn't parse, and the two can't be combined whatever the value is.
-            if (result.GetValue(mineOption) && result.GetResult(createdByOption) is { Implicit: false })
+            if (result.GetFlag(mineOption) && result.GetResult(createdByOption) is { Implicit: false })
             {
                 result.AddError("--mine and --created-by-id cannot be combined.");
-            }
-
-            if (result.GetValue(expiredOption) && result.GetValue(includeSandboxesOption))
-            {
-                result.AddError(
-                    "--expired and --include-sandboxes cannot be combined: --expired reads every batch, and " +
-                    "--include-sandboxes reads each batch's details. List them with " +
-                    "'xbox test-account batch list --expired', then run 'xbox test-account batch get <batch-id>' " +
-                    "to see a batch's sandbox access.");
             }
         });
         command.SetAction((ParseResult parseResult, CancellationToken cancellationToken) =>
@@ -161,14 +152,14 @@ internal static partial class TestAccountCommandFactory
                 Keyword: parseResult.GetValue(tagOption)?.Trim(),
                 State: parseResult.GetValue(stateOption),
                 Top: parseResult.GetValue(limitOption),
-                IncludeSandboxes: parseResult.GetValue(includeSandboxesOption));
-            bool expired = parseResult.GetValue(expiredOption);
+                IncludeSandboxes: parseResult.GetValue(includeSandboxesOption),
+                Expired: parseResult.GetValue(expiredOption));
             return InvokeAsync(
                 parseResult,
                 sellerOption,
                 "Listing test account batches using the signed in Entra ID token",
                 (client, sellerId, stdout, stderr, output, token) =>
-                    RunListAsync(client, sellerId, filter, expired, output, stdout, stderr, token),
+                    RunListAsync(client, sellerId, filter, output, stdout, stderr, token),
                 cancellationToken);
         });
         return command;
@@ -260,6 +251,7 @@ internal static partial class TestAccountCommandFactory
                 }
                 catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
                 {
+                    XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
                     Console.Error.WriteLine($"Request failed: {ex.Message}");
                     return 1;
                 }
@@ -289,12 +281,8 @@ internal static partial class TestAccountCommandFactory
                 : Program.XboxPartnerClientFactory(configuration);
             try
             {
-                sellerId = await sellerOption.GetSellerIdAsync(
-                    parseResult,
-                    configuration,
-                    client,
-                    XboxPartnerCommandSupport.ResolveBaseUrl(configuration),
-                    cancellationToken).ConfigureAwait(false);
+                _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+                sellerId = sellerOption.GetSellerId(parseResult);
             }
             catch
             {
@@ -314,16 +302,10 @@ internal static partial class TestAccountCommandFactory
         }
     }
 
-    /// <summary>
-    /// Lists batches. With <paramref name="expired"/>, the whole list is read and the CLI keeps
-    /// the expired batches, so <see cref="TestAccountBatchFilter.Top"/> limits what is printed
-    /// rather than what the gateway returns.
-    /// </summary>
     internal static async Task<int> RunListAsync(
         XboxPartnerClient client,
         long? sellerId,
         TestAccountBatchFilter filter,
-        bool expired,
         OutputOptions output,
         TextWriter stdout,
         TextWriter stderr,
@@ -338,20 +320,11 @@ internal static partial class TestAccountCommandFactory
         int exitCode = await RunAsync(
             async () =>
             {
-                TestAccountBatchFilter request = expired ? filter with { Top = null } : filter;
-                string response;
-                using (var progress = ListProgress.Start("Reading test account batches", stderr))
-                {
-                    // With --expired, most of what's read is dropped afterward, so the line shows only time.
-                    response = await client.ListTestAccountBatchesAsync(
-                        sellerId, request, cancellationToken, expired ? null : progress.PageRead).ConfigureAwait(false);
-                }
-
-                return expired
-                    ? TestAccountLookup.FilterExpired(response, Dependencies.GetUtcNow(), filter.Top)
-                    : response;
+                using var progress = ListProgress.Start("Reading test account batches", stderr);
+                return await client.ListTestAccountBatchesAsync(
+                    sellerId, filter, cancellationToken, progress.PageRead).ConfigureAwait(false);
             },
-            response => XboxPartnerTableFormatter.FormatTestAccountBatches(response, filter, expired),
+            response => XboxPartnerTableFormatter.FormatTestAccountBatches(response, filter),
             ex => DescribeFailure(ex.StatusCode, ex.ResponseBody, TestAccountRequest.List),
             output,
             stdout,
@@ -431,6 +404,7 @@ internal static partial class TestAccountCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
             stderr.WriteLine($"Request failed: {ex.Message}");
             return 1;
         }
@@ -532,6 +506,10 @@ internal static partial class TestAccountCommandFactory
             HttpStatusCode.NotFound when isLookup =>
                 "Test accounts may be unavailable, or the batch was deleted " +
                 "while it was being read. Retry, or pass --seller-id if the account belongs to another seller.",
+            HttpStatusCode.NotFound when isGet &&
+                ReadProblemString(responseBody, "code") == TestAccountBatchWaiter.BatchNotFoundCode =>
+                "No such batch for this seller. Check the batch ID and --seller-id. A batch that was already " +
+                "deleted is not found either.",
             HttpStatusCode.NotFound when isGet =>
                 "Check the batch ID and --seller-id. Test accounts may be unavailable.",
             HttpStatusCode.NotFound =>

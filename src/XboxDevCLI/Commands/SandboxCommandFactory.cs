@@ -6,6 +6,7 @@ using System.CommandLine.Parsing;
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Identity.Client;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Output;
 using XboxDevCLI.Presentation;
@@ -20,14 +21,8 @@ namespace XboxDevCLI.Commands;
 /// </summary>
 internal static class SandboxCommandFactory
 {
-    /// <summary>The creation job failed, so the sandbox was not created.</summary>
+    /// <summary>The creation job failed, which can leave the sandbox's state unknown.</summary>
     internal const int JobFailedExitCode = 2;
-
-    /// <summary>
-    /// The request was sent but its outcome could not be confirmed, so the sandbox may or may not
-    /// exist. Matches <c>test-account batch create</c>.
-    /// </summary>
-    internal const int OutcomeUnknownExitCode = 3;
 
     /// <summary>
     /// The creation job was accepted but the command stopped before confirming the sandbox: the wait
@@ -51,30 +46,224 @@ internal static class SandboxCommandFactory
         return sandbox.Requires(CommandRequirement.Authentication).Calls(ServiceEndpoints.XboxPartner);
     }
 
-    private delegate bool SandboxIdNormalizer(string? value, out string normalized);
+    private static bool TryNormalize(string? value, bool forCreate, out string normalized) =>
+        forCreate
+            ? XboxSandboxId.TryNormalizeForCreate(value, out normalized)
+            : XboxSandboxId.TryNormalizeForRead(value, out normalized);
 
-    private static Argument<string> CreateSandboxIdArgument(
-        string description, SandboxIdNormalizer normalize, string formatDescription)
+    private static string FormatDescription(bool forCreate) =>
+        forCreate ? XboxSandboxId.CreateFormatDescription : XboxSandboxId.ReadFormatDescription;
+
+    private static Argument<string> CreateSandboxIdArgument(string description, bool forCreate)
     {
         var argument = new Argument<string>("sandbox-id") { Description = description };
         argument.Validators.Add(result =>
         {
-            if (result.Tokens.Count > 0 && !normalize(result.Tokens[0].Value, out _))
+            if (result.Tokens.Count == 0)
             {
-                result.AddError($"Invalid sandbox ID '{result.Tokens[0].Value}'. {formatDescription}");
+                return;
+            }
+
+            var value = result.Tokens[0].Value;
+            if (XboxSandboxId.IsNumber(value))
+            {
+                if (!XboxSandboxId.TryNormalizeNumber(value, out var number))
+                {
+                    result.AddError($"Invalid sandbox number '{value}'. {XboxSandboxId.NumberFormatDescription}");
+                }
+                else if (forCreate && XboxSandboxId.IsReservedNumber(number))
+                {
+                    result.AddError(
+                        $"Sandbox number {number} is reserved for Isolated sandboxes, so it can't be created. " +
+                        "Choose another number.");
+                }
+            }
+            else if (!TryNormalize(value, forCreate, out _))
+            {
+                result.AddError($"Invalid sandbox ID '{value}'. {FormatDescription(forCreate)}");
             }
         });
         return argument;
     }
 
+    /// <summary>
+    /// Returns the sandbox ID to use: a sandbox ID as normalized, or a sandbox number joined to the
+    /// seller's account moniker, which is read only for a number. A command that
+    /// <paramref name="changes"/> something always shows the ID a number resolved to.
+    /// </summary>
+    internal static async Task<string?> ResolveSandboxIdAsync(
+        ParseResult result,
+        string value,
+        bool forCreate,
+        bool changes,
+        XboxPartnerClient client,
+        string baseUrl,
+        string sellerId,
+        CancellationToken cancellationToken)
+    {
+        if (!XboxSandboxId.TryNormalizeNumber(value, out var number))
+        {
+            TryNormalize(value, forCreate, out var id);
+            return id;
+        }
+
+        var moniker = await ReadMonikerAsync(
+            result, client, baseUrl, sellerId,
+            $"to resolve sandbox number {number}",
+            $"Sandbox number {number} could not be resolved",
+            cancellationToken);
+        var resolved = $"{moniker}.{number}";
+        if (!TryNormalize(resolved, forCreate, out var normalized))
+        {
+            Console.Error.WriteLine(
+                $"Sandbox number {number} resolves to '{XboxPartnerCommandSupport.ForTerminal(resolved)}' " +
+                $"for seller {sellerId}, which isn't a valid sandbox ID here. {FormatDescription(forCreate)}");
+            return null;
+        }
+
+        // A command that changes something always shows the ID it filled in, even with --confirm.
+        if (changes)
+        {
+            Console.Error.WriteLine($"Sandbox number {number} is sandbox {normalized}.");
+        }
+        else
+        {
+            Program.WriteVerbose(result.GetValue(Program.VerboseOption),
+                () => $"Sandbox number {number} is sandbox {normalized}.");
+        }
+
+        return normalized;
+    }
+
+    /// <summary>
+    /// Returns the ID of the seller's lowest-numbered sandbox that the listing doesn't show and that
+    /// can be created, or <see langword="null"/> after explaining why there's none.
+    /// </summary>
+    private static async Task<string?> ChooseSandboxIdAsync(
+        ParseResult result,
+        XboxPartnerClient client,
+        string baseUrl,
+        string sellerId,
+        CancellationToken cancellationToken)
+    {
+        const string NotChosen = "A sandbox number could not be chosen";
+        var moniker = await ReadMonikerAsync(
+            result, client, baseUrl, sellerId, "to choose a sandbox number", NotChosen, cancellationToken);
+        if (!XboxSandboxId.TryNormalizeForCreate($"{moniker}.0", out _))
+        {
+            Console.Error.WriteLine(
+                $"The account moniker for seller {sellerId}, '{XboxPartnerCommandSupport.ForTerminal(moniker)}', " +
+                $"doesn't form a sandbox ID that can be created. {XboxSandboxId.CreateFormatDescription}");
+            return null;
+        }
+
+        IReadOnlyList<XboxPartnerSandboxSummary> sandboxes;
+        try
+        {
+            Program.WriteVerbose(result.GetValue(Program.VerboseOption),
+                () => $"Listing sandboxes for seller {sellerId}, following every page, to choose a sandbox number.");
+            string json;
+            using (var progress = ListProgress.Start("Reading sandboxes"))
+            {
+                json = await client.ListSandboxesAsync(baseUrl, sellerId, cancellationToken, progress.PageRead);
+            }
+
+            sandboxes = XboxPartnerCommandSupport.DeserializeResponse<List<XboxPartnerSandboxSummary>>(json, "sandbox list");
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+            && XboxPartnerCommandSupport.IsRequestError(exception))
+        {
+            Console.Error.WriteLine(
+                $"{NotChosen}, because the sandboxes of seller {sellerId} could not be listed." +
+                Advice(exception, sellerId, "Pass a sandbox number or ID instead of --free-number."));
+            throw;
+        }
+
+        var id = XboxSandboxId.LowestFreeId(moniker, sandboxes.Select(sandbox => sandbox.SandboxId));
+        if (id is null)
+        {
+            Console.Error.WriteLine(
+                $"Seller {sellerId} has no free sandbox number: every number from 0 to 999 under " +
+                $"{XboxPartnerCommandSupport.ForTerminal(moniker.ToUpperInvariant())} is taken or reserved.");
+            return null;
+        }
+
+        // A command that changes something always shows the ID it filled in, even with --confirm.
+        Console.Error.WriteLine(
+            $"Sandbox number {id[(id.LastIndexOf('.') + 1)..]} is the seller's lowest free number, so the new sandbox is {id}.");
+        return id;
+    }
+
+    /// <summary>
+    /// Reads the seller's account moniker, or explains why it couldn't be read and what to do
+    /// instead (see Advice), and rethrows.
+    /// </summary>
+    internal static async Task<string> ReadMonikerAsync(
+        ParseResult result,
+        XboxPartnerClient client,
+        string baseUrl,
+        string sellerId,
+        string purpose,
+        string failure,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            Program.WriteVerbose(result.GetValue(Program.VerboseOption),
+                () => $"Reading the account moniker for seller {sellerId} {purpose}.");
+            var moniker = await client.GetAccountMonikerAsync(baseUrl, sellerId, cancellationToken);
+            return moniker.Trim();
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested
+            && XboxPartnerCommandSupport.IsRequestError(exception))
+        {
+            var list = XboxPartnerCommandSupport.BuildRecoveryCommand(result, "sandbox list", sellerId);
+            Console.Error.WriteLine(
+                $"{failure}, because the account moniker for seller {sellerId} could not be read." +
+                Advice(exception, sellerId, $"Pass the full sandbox ID instead. To see the seller's sandbox IDs, run: {list}"));
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// What to do after a request that a sandbox number or --free-number needs fails:
+    /// <paramref name="instead"/>, which avoids the request, unless the failure stops that too.
+    /// </summary>
+    private static string Advice(Exception exception, string sellerId, string instead) => exception switch
+    {
+        // A refused sign-in or seller isn't something to route around with other input.
+        XboxPartnerApiException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden } =>
+            $" Check that you're signed in and have access to seller {sellerId}.",
+        // Sign-in and local failures stop every request, and are reported on their own.
+        _ when StopsEveryRequest(exception) => string.Empty,
+        _ => " " + instead,
+    };
+
+    /// <summary>
+    /// Whether <paramref name="exception"/> would stop any request, such as being signed out or
+    /// having no seller, so <see cref="Advice"/> doesn't suggest another request instead.
+    /// </summary>
+    private static bool StopsEveryRequest(Exception exception) =>
+        exception is XboxPartnerApiException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden }
+            or MsalException or InvalidOperationException or ArgumentException or UnauthorizedAccessException;
+
     private static Command CreateListCommand(
         Func<IConfiguration, XboxPartnerClient>? clientFactory)
     {
+        var owned = new Option<bool>("--owned")
+        {
+            Description = "Only list the seller's own sandboxes, leaving out global sandboxes such as RETAIL.",
+        };
+        var type = new Option<string?>("--type")
+        {
+            Description = "Only list shared or isolated sandboxes.",
+        };
+        type.AcceptOnlyFromAmong("shared", "isolated");
         var seller = XboxPartnerCommandSupport.CreateSellerIdOption();
         var baseUrl = XboxPartnerCommandSupport.CreateBaseUrlOption();
         var command = new Command("list", "List the XBOX sandboxes available to a Partner Center seller")
         {
-            seller, baseUrl,
+            owned, type, seller, baseUrl,
         };
         command.SetAction((ParseResult result, CancellationToken cancellationToken) =>
             ExecuteAsync(
@@ -87,6 +276,13 @@ internal static class SandboxCommandFactory
                     using (var progress = ListProgress.Start("Reading sandboxes"))
                     {
                         json = await client.ListSandboxesAsync(url, sellerId, cancellationToken, progress.PageRead);
+                    }
+
+                    var ownedOnly = result.GetValue(owned);
+                    var typeFilter = result.GetValue(type);
+                    if (ownedOnly || typeFilter is not null)
+                    {
+                        json = FilterSandboxes(json, ownedOnly, typeFilter);
                     }
 
                     json = $"{{\"sandboxes\":{json}}}";
@@ -106,14 +302,17 @@ internal static class SandboxCommandFactory
                 cancellationToken));
         return command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.ReadOnly,
-            Scope: "Sandboxes visible to the seller selected by --seller-id, XBOX_SELLER_ID, or 'context set', including global sandboxes.",
+            Scope: "Sandboxes visible to the seller selected by --seller-id, XBOX_SELLER_ID, or 'context set', including global sandboxes unless --owned is passed.",
             Output: "A JSON object with a sandboxes array of sandbox objects with sandboxId, type (Shared, Isolated, or Unknown), " +
-                "sellerId, and global; table output has SANDBOX, TYPE, and GLOBAL columns. " + ListProgress.HelpOutput,
+                "sellerId, and global; table output has SANDBOX, TYPE, and GLOBAL columns. --owned and --type " +
+                "keep only the sandboxes that match every filter passed; none matching is an empty array. " +
+                ListProgress.HelpOutput,
             Examples:
             [
                 "xbox sandbox list",
                 "xbox sandbox list --output table",
-                "xbox sandbox list --seller-id 1234567 --output json-compact",
+                "xbox sandbox list --owned --type shared --output table",
+                "xbox sandbox list --type isolated --seller-id 1234567 --output json-compact",
             ],
             LearnMore:
             [
@@ -127,12 +326,11 @@ internal static class SandboxCommandFactory
         Func<IConfiguration, XboxPartnerClient>? clientFactory)
     {
         var sandboxId = CreateSandboxIdArgument(
-            "Sandbox ID, such as ABCDEF.1 or RETAIL.",
-            XboxSandboxId.TryNormalizeForRead,
-            XboxSandboxId.ReadFormatDescription);
+            "Sandbox ID, such as ABCDEF.1 or RETAIL, or a sandbox number in the seller's account, such as 1.",
+            forCreate: false);
         var seller = XboxPartnerCommandSupport.CreateSellerIdOption();
         var baseUrl = XboxPartnerCommandSupport.CreateBaseUrlOption();
-        var command = new Command("get", "Get one XBOX sandbox by ID")
+        var command = new Command("get", "Get one XBOX sandbox by ID or number")
         {
             sandboxId, seller, baseUrl,
         };
@@ -141,7 +339,13 @@ internal static class SandboxCommandFactory
                 result, seller, baseUrl, clientFactory,
                 async (client, url, sellerId) =>
                 {
-                    XboxSandboxId.TryNormalizeForRead(result.GetValue(sandboxId), out var id);
+                    var id = await ResolveSandboxIdAsync(
+                        result, result.GetValue(sandboxId)!, forCreate: false, changes: false, client, url, sellerId, cancellationToken);
+                    if (id is null)
+                    {
+                        return 1;
+                    }
+
                     Program.WriteVerbose(result.GetValue(Program.VerboseOption),
                         () => $"Reading sandbox {id} for seller {sellerId}.");
                     var json = await client.GetSandboxAsync(url, sellerId, id, cancellationToken);
@@ -159,12 +363,15 @@ internal static class SandboxCommandFactory
             [
                 "xbox sandbox get ABCDEF.1",
                 "xbox sandbox get RETAIL",
+                "xbox sandbox get 1 --seller-id 1234567",
                 "xbox sandbox get ABCDEF.1 --seller-id 1234567 --output table",
             ],
             LearnMore:
             [
                 "Sandbox IDs are case-insensitive and normalized to upper case. " +
                 XboxSandboxId.ReadFormatDescription,
+                XboxSandboxId.NumberFormatDescription + " The number is joined to the seller's account " +
+                "moniker, such as ABCDEF, to form the sandbox ID ABCDEF.1.",
             ],
             Table: XboxPartnerCommandSupport.SandboxRecordTableView));
     }
@@ -174,9 +381,14 @@ internal static class SandboxCommandFactory
         XboxPartnerJobDependencies dependencies)
     {
         var sandboxId = CreateSandboxIdArgument(
-            "ID of the new development sandbox, such as ABCDEF.1.",
-            XboxSandboxId.TryNormalizeForCreate,
-            XboxSandboxId.CreateFormatDescription);
+            "ID of the new development sandbox, such as ABCDEF.1, or its number in the seller's account, " +
+            "such as 1. Required unless --free-number is passed.",
+            forCreate: true);
+        sandboxId.Arity = ArgumentArity.ZeroOrOne;
+        var freeNumber = new Option<bool>("--free-number")
+        {
+            Description = "Use the seller's lowest free sandbox number instead of a sandbox ID.",
+        };
         var seller = XboxPartnerCommandSupport.CreateSellerIdOption();
         var baseUrl = XboxPartnerCommandSupport.CreateBaseUrlOption();
         var confirm = new Option<bool>("--confirm", "--yes", "-y")
@@ -185,18 +397,40 @@ internal static class SandboxCommandFactory
         };
         var command = new Command("create", "Create a Shared XBOX development sandbox and wait for it")
         {
-            sandboxId, seller, baseUrl, confirm,
+            sandboxId, freeNumber, seller, baseUrl, confirm,
         };
+        command.Validators.Add(commandResult =>
+        {
+            var hasId = commandResult.GetResult(sandboxId) is { Tokens.Count: > 0 };
+            if (hasId && commandResult.GetFlag(freeNumber))
+            {
+                commandResult.AddError("--free-number can't be combined with a sandbox ID.");
+            }
+            else if (!hasId && !commandResult.GetFlag(freeNumber))
+            {
+                commandResult.AddError(
+                    "Pass a sandbox ID or number, or --free-number to use the seller's lowest free number.");
+            }
+        });
         command.SetAction((ParseResult result, CancellationToken cancellationToken) =>
             ExecuteAsync(
                 result, seller, baseUrl, clientFactory,
                 async (client, url, sellerId) =>
                 {
-                    XboxSandboxId.TryNormalizeForCreate(result.GetValue(sandboxId), out var id);
+                    var chosen = result.GetValue(freeNumber);
+                    var id = chosen
+                        ? await ChooseSandboxIdAsync(result, client, url, sellerId, cancellationToken)
+                        : await ResolveSandboxIdAsync(
+                            result, result.GetValue(sandboxId)!, forCreate: true, changes: true, client, url, sellerId, cancellationToken);
+                    if (id is null)
+                    {
+                        return 1;
+                    }
+
                     var confirmed = result.GetResult(confirm) is { Implicit: false }
                         ? result.GetValue(confirm)
                         : result.GetValue(Program.ConfirmOption);
-                    if (!ConfirmCreation(confirmed, dependencies, id, sellerId))
+                    if (!ConfirmCreation(result, confirmed, dependencies, id, sellerId, chosen))
                     {
                         return 1;
                     }
@@ -207,7 +441,7 @@ internal static class SandboxCommandFactory
                     Program.WriteVerbose(result.GetValue(Program.VerboseOption),
                         () => $"Submitting sandbox creation for seller {sellerId}.");
                     XboxPartnerSandboxCreationJob job;
-                    var sent = false;
+                    string? sentCorrelationId = null;
                     try
                     {
                         Console.Error.WriteLine("Submitting sandbox creation job...");
@@ -216,21 +450,21 @@ internal static class SandboxCommandFactory
                             url, sellerId,
                             new CreateXboxSandboxRequest(id, XboxSandboxId.SharedType),
                             cancellationToken,
-                            onSending: () => sent = true);
+                            onSending: correlationId => sentCorrelationId = correlationId);
                     }
-                    catch (OperationCanceledException) when (!sent && cancellationToken.IsCancellationRequested)
+                    catch (OperationCanceledException) when (sentCorrelationId is null && cancellationToken.IsCancellationRequested)
                     {
                         Console.Error.WriteLine("Canceled before the request was sent, so no sandbox was created.");
                         return 1;
                     }
-                    catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
+                    catch (Exception exception) when (sentCorrelationId is not null && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
                     {
                         Console.Error.WriteLine(
                             "Sandbox creation was interrupted or its response could not be verified; " +
                             $"it is unknown whether sandbox {id} was created. Do not resubmit.");
                         Console.Error.WriteLine($"Check whether it exists with: {recovery}");
-                        XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken);
-                        return OutcomeUnknownExitCode;
+                        XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken, sentCorrelationId);
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
 
@@ -246,11 +480,11 @@ internal static class SandboxCommandFactory
                             "The sandbox creation job response was invalid; " +
                             $"it is unknown whether sandbox {id} was created. Do not resubmit.");
                         Console.Error.WriteLine($"Check whether it exists with: {recovery}");
-                        return OutcomeUnknownExitCode;
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
                     return await WaitForJobAsync(
-                        result, client, url, sellerId, id, job, recovery, dependencies, cancellationToken);
+                        result, client, url, sellerId, id, job, recovery, dependencies, chosen, cancellationToken);
                 },
                 cancellationToken));
         return command.WithMetadata(new CommandMetadata(
@@ -259,13 +493,22 @@ internal static class SandboxCommandFactory
             Output: "The created sandbox as a JSON object, or the failed job object when the creation job " +
                 "fails. Nothing is written to stdout when the outcome is unknown or the job is still running. " +
                 "Submission progress, job ID, correlation ID, and recovery commands go to stderr.",
-            SafetyDetails: "Creates production state and cannot be undone from the CLI. Requires " +
+            SafetyDetails: "Creates production state that cannot be deleted by the CLI or in Partner Center. Requires " +
                 "--confirm (--yes, -y) or terminal confirmation. " +
-                "Submission is never retried. Agent approval is still required.",
+                "Submission is never retried. After exit 3 or 4, do not run it again. After exit 2 with " +
+                "--free-number, run it again with the chosen sandbox ID instead, so it can't create a second " +
+                "sandbox. Agent approval is still required.",
             LearnMore:
             [
                 "Only Shared sandboxes can be created. " + XboxSandboxId.CreateFormatDescription,
-                "Waits up to 120 seconds, polling every 5 seconds unless the service supplies Retry-After. " +
+                XboxSandboxId.NumberFormatDescription + " The number is joined to the seller's account " +
+                "moniker, such as ABCDEF, to form the sandbox ID ABCDEF.1, which the confirmation names. " +
+                "The number 58 is reserved.",
+                "With --free-number, the command lists the seller's sandboxes and uses the lowest number " +
+                "from 0 to 999 that isn't taken or reserved. Listing and creating aren't atomic, so another " +
+                "create can take that number first; the command never tries another number itself.",
+                "Waits up to 120 seconds, polling every 5 seconds unless the service supplies Retry-After, " +
+                "and retries brief failures reading the job's status. " +
                 "Exit codes: 0 created; 1 not created (rejected, or failed before the request was sent); " +
                 "2 the creation job failed; 3 the request was sent but its outcome is unknown; " +
                 "4 the job was accepted but the wait ended (timeout, Ctrl+C, polling failure, or the new " +
@@ -275,6 +518,8 @@ internal static class SandboxCommandFactory
             Examples:
             [
                 "xbox sandbox create ABCDEF.1 --seller-id 1234567 --confirm",
+                "xbox sandbox create 2 --seller-id 1234567 --confirm",
+                "xbox sandbox create --free-number --seller-id 1234567 --confirm",
                 "xbox sandbox create ABCDEF.2 --confirm --output json-compact",
             ]));
     }
@@ -288,6 +533,7 @@ internal static class SandboxCommandFactory
         XboxPartnerSandboxCreationJob initial,
         string recovery,
         XboxPartnerJobDependencies dependencies,
+        bool chosen,
         CancellationToken cancellationToken)
     {
         var verbose = result.GetValue(Program.VerboseOption);
@@ -350,7 +596,16 @@ internal static class SandboxCommandFactory
         if (completed.Failed)
         {
             Console.WriteLine(Program.FormatOutput(completed.RawResponse, compact, dataOnly: false));
-            Console.Error.WriteLine($"Sandbox creation job {jobId} completed without creating sandbox {sandboxId}.");
+            Console.Error.WriteLine($"Sandbox creation job {jobId} failed for sandbox {sandboxId}.");
+            if (chosen)
+            {
+                // Running --free-number again could choose another number, and a failed job can leave the
+                // sandbox's state unknown, so pin the chosen ID.
+                Console.Error.WriteLine("To try again without creating a second sandbox, run: " +
+                    XboxPartnerCommandSupport.BuildRecoveryCommand(
+                        result, $"sandbox create {ShellQuoting.Quote(sandboxId)} --confirm", sellerId));
+            }
+
             return JobFailedExitCode;
         }
 
@@ -388,19 +643,28 @@ internal static class SandboxCommandFactory
         }
     }
 
-    private static async Task<int> ExecuteAsync(
+    /// <summary>
+    /// Runs <paramref name="action"/> with a client, the service URL, and the seller, and reports
+    /// a failed request. Without <paramref name="baseUrlOption"/>, the URL comes from configuration.
+    /// <paramref name="offline"/>, when set, is written after a failure that would stop any request,
+    /// such as being signed out or having no seller, to name input that needs no request.
+    /// </summary>
+    internal static async Task<int> ExecuteAsync(
         ParseResult result,
         Option<string?> sellerOption,
-        Option<string?> baseUrlOption,
+        Option<string?>? baseUrlOption,
         Func<IConfiguration, XboxPartnerClient>? clientFactory,
         Func<XboxPartnerClient, string, string, Task<int>> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? offline = null)
     {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             var configuration = Program.GetConfiguration(result);
-            var baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(result, baseUrlOption, configuration);
+            var baseUrl = baseUrlOption is null
+                ? XboxPartnerCommandSupport.ResolveBaseUrl(configuration)
+                : XboxPartnerCommandSupport.ResolveBaseUrl(result, baseUrlOption, configuration);
             using var client = clientFactory is null
                 ? new XboxPartnerClient(
                     configuration,
@@ -414,9 +678,33 @@ internal static class SandboxCommandFactory
             && !XboxPartnerCommandSupport.IsCallerCancellation(exception, cancellationToken))
         {
             XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken);
+            if (offline is not null && StopsEveryRequest(exception))
+            {
+                Console.Error.WriteLine(offline);
+            }
+
             return 1;
         }
     }
+
+    /// <summary>
+    /// Keeps the sandboxes in a JSON array that match every filter given, as their original JSON.
+    /// </summary>
+    private static string FilterSandboxes(string json, bool ownedOnly, string? type)
+    {
+        using var document = JsonDocument.Parse(json);
+        var kept = document.RootElement.EnumerateArray()
+            .Where(sandbox =>
+                (!ownedOnly || !(sandbox.TryGetProperty("global", out var global) && global.ValueKind == JsonValueKind.True))
+                && (type is null || string.Equals(ReadString(sandbox, "type"), type, StringComparison.OrdinalIgnoreCase)))
+            .Select(sandbox => sandbox.GetRawText());
+        return "[" + string.Join(',', kept) + "]";
+    }
+
+    private static string? ReadString(JsonElement sandbox, string name) =>
+        sandbox.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     private static void WriteSandbox(string json, OutputOptions output)
     {
@@ -437,7 +725,8 @@ internal static class SandboxCommandFactory
     }
 
     private static bool ConfirmCreation(
-        bool confirmed, XboxPartnerJobDependencies dependencies, string sandboxId, string sellerId)
+        ParseResult result, bool confirmed, XboxPartnerJobDependencies dependencies, string sandboxId,
+        string sellerId, bool chosen)
     {
         if (confirmed)
         {
@@ -445,11 +734,14 @@ internal static class SandboxCommandFactory
         }
 
         Console.Error.WriteLine(
-            $"Creating the Shared sandbox '{sandboxId}' under seller {sellerId} cannot be undone from this CLI.");
+            $"The Shared sandbox '{sandboxId}' under seller {sellerId} cannot be deleted after it is created.");
         if (!dependencies.IsInteractive())
         {
-            Console.Error.WriteLine(
-                "Re-run with --confirm (--yes, -y) to proceed without an interactive prompt.");
+            // Running --free-number again could choose another number, so pin the one shown.
+            Console.Error.WriteLine(chosen
+                ? "Re-run with: " + XboxPartnerCommandSupport.BuildRecoveryCommand(
+                    result, $"sandbox create {ShellQuoting.Quote(sandboxId)} --confirm", sellerId)
+                : "Re-run with --confirm (--yes, -y) to proceed without an interactive prompt.");
             TelemetryRecorder.RecordError(TelemetryErrorTypes.NotConfirmed);
             return false;
         }

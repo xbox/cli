@@ -13,6 +13,7 @@ using Xunit;
 
 namespace XboxDevCLI.UnitTest;
 
+[Collection("ConsoleRedirect")]
 public class CommitDocumentsCommandTests
 {
     [Fact]
@@ -25,34 +26,18 @@ public class CommitDocumentsCommandTests
         Assert.Contains(result.Errors, error => error.Message.Contains("notaguid", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void Command_CollectsRepeatedFileOptionsWithoutSplittingPaths()
-    {
-        string[] paths = ["folder with spaces/nsal.xml", "title,priv.xml", "config/*.xml"];
-        ParseResult result = Program.BuildRootCommand().Parse(
-            ["xbl", "config", "save", "--type", "account",
-                "--file", paths[0], "--file", paths[1], "--file", paths[2]],
-            Program.NoResponseFileConfig);
-
-        Assert.Empty(result.Errors);
-        var option = Assert.IsType<Option<string[]>>(
-            Assert.Single(result.CommandResult.Command.Options, o => o.Name == "--file"));
-        Assert.Equal(paths, result.GetValue(option));
-    }
-
     [Theory]
     [InlineData("--file")]
-    [InlineData("--files", "nsal.xml")]
-    [InlineData("--file", "nsal.xml", "titlepriv.xml")]
-    [InlineData("--file", "nsal.xml", "--file")]
-    [InlineData("--file", "--file", "nsal.xml")]
+    [InlineData("--files", "presence.xml")]
+    [InlineData("--file", "presence.xml", "achievements2017.xml")]
+    [InlineData("--file", "presence.xml", "--file")]
+    [InlineData("--file", "--file", "presence.xml")]
     [InlineData("--file", "")]
-    [InlineData("--file", " ")]
-    [InlineData("--file", "nsal.xml", "--file", "", "--file", "titlepriv.xml")]
+    [InlineData("--file", "presence.xml", "--file", "", "--file", "achievements2017.xml")]
     public void Command_RejectsMissingFileValuesAndLegacySyntax(params string[] arguments)
     {
         ParseResult result = Program.BuildRootCommand().Parse(
-            ["xbl", "config", "save", "--type", "account", .. arguments],
+            ["xbl", "config", "save", "--scope", "account", .. arguments],
             Program.NoResponseFileConfig);
 
         Assert.NotEmpty(result.Errors);
@@ -62,14 +47,14 @@ public class CommitDocumentsCommandTests
     public void Command_AcceptsRepeatedFileOptionsWithEqualsSyntax()
     {
         ParseResult result = Program.BuildRootCommand().Parse(
-            ["xbl", "config", "save", "--type", "account",
-                "--file=nsal.xml", "--file=titlepriv.xml"],
+            ["xbl", "config", "save", "--scope", "account",
+                "--file=presence.xml", "--file=achievements2017.xml"],
             Program.NoResponseFileConfig);
 
         Assert.Empty(result.Errors);
         var option = Assert.IsType<Option<string[]>>(
             Assert.Single(result.CommandResult.Command.Options, o => o.Name == "--file"));
-        Assert.Equal(new[] { "nsal.xml", "titlepriv.xml" }, result.GetValue(option));
+        Assert.Equal(new[] { "presence.xml", "achievements2017.xml" }, result.GetValue(option));
     }
 
     [Fact]
@@ -78,37 +63,37 @@ public class CommitDocumentsCommandTests
         ParseResult validSandbox = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
             "--scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 " +
-            "--file nsal.xml --file titlepriv.xml --validate-only");
+            "--file presence.xml --file achievements2017.xml --validate-only");
         ParseResult validAccount = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
-            "--type account --file accountconfig.xml");
+            "--scope account --file accountconfig.xml");
         ParseResult missingFiles = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
             "--scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1");
         ParseResult missingScid = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
-            "--sandbox-id XDKS.1 --file nsal.xml");
+            "--sandbox-id XDKS.1 --file presence.xml");
         ParseResult mixedScope = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
-            "--type account --sandbox-id XDKS.1 --file accountconfig.xml");
+            "--scope account --sandbox-id XDKS.1 --file accountconfig.xml");
         ParseResult unsafeSandbox = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
             "--scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id ../outside " +
-            "--file nsal.xml");
+            "--file presence.xml");
         ParseResult removedAccountId = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
-            "--type account --account-id 11111111-2222-3333-4444-555555555555 " +
+            "--scope account --account-id 11111111-2222-3333-4444-555555555555 " +
             "--file accountconfig.xml");
         ParseResult force = Program.BuildRootCommand().Parse(
-            "xbl config save --type account --file accountconfig.xml --force");
+            "xbl config save --scope account --file accountconfig.xml --force");
         ParseResult removedOverwrite = Program.BuildRootCommand().Parse(
-            "xbl config save --type account --file accountconfig.xml --overwrite");
+            "xbl config save --scope account --file accountconfig.xml --overwrite");
         ParseResult removedAlias = Program.BuildRootCommand().Parse(
-            "xbl config save --type account -f accountconfig.xml");
+            "xbl config save --scope account -f accountconfig.xml");
         ParseResult invalidEtagFileName = Program.BuildRootCommand().Parse(
             "xbl config save --seller-id 2 " +
             "--scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id CON " +
-            "--file nsal.xml");
+            "--file presence.xml");
 
         Assert.Empty(validSandbox.Errors);
         Assert.Empty(validAccount.Errors);
@@ -132,11 +117,11 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string firstPath = Path.Combine(directory, "nsal.xml");
-            string secondPath = Path.Combine(directory, "titlepriv.xml");
+            string firstPath = Path.Combine(directory, "presence.xml");
+            string secondPath = Path.Combine(directory, "achievements2017.xml");
             await File.WriteAllTextAsync(firstPath, "<ServiceNsal />");
             await File.WriteAllTextAsync(secondPath, "<TitlePrivileges />");
-            await File.WriteAllTextAsync(Path.Combine(directory, "ALL.etag"), "\"old-etag\"");
+            await File.WriteAllTextAsync(Path.Combine(directory, "XDKS.1.etag"), "\"old-etag\"");
             using var response = CreateResponse(
                 """{"ValidationInfo":[],"Version":42,"ETag":"\"new-etag\"","CanCommit":true,"Committed":true}""");
             var handler = new MockHttpMessageHandler(response);
@@ -150,7 +135,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 " SandBox ",
                 scid,
-                " ALL ",
+                " XDKS.1 ",
                 [firstPath, Path.Combine(directory, "*.xml"), firstPath],
                 validateOnly: false,
                 force: false,
@@ -162,14 +147,16 @@ public class CommitDocumentsCommandTests
                 CancellationToken.None);
 
             Assert.Equal(0, exitCode);
-            Assert.Empty(stderr.ToString());
+            Assert.Equal(
+                $"Saved to the XDKS.1 draft. Not published yet. Run '{CliIdentity.CommandName} xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --seller-id 12345' to publish it.{Environment.NewLine}",
+                stderr.ToString());
             Assert.Equal(
                 "http://localhost:8080/xboxpartner/v1/xboxlive/documents/commit",
                 handler.LastRequest?.RequestUri?.AbsoluteUri);
             using JsonDocument body = JsonDocument.Parse(handler.LastRequestBody!);
             Assert.Equal("sandbox", body.RootElement.GetProperty("documentType").GetString());
             Assert.Equal(scid, body.RootElement.GetProperty("scid").GetGuid());
-            Assert.Equal("ALL", body.RootElement.GetProperty("sandbox").GetString());
+            Assert.Equal("XDKS.1", body.RootElement.GetProperty("sandbox").GetString());
             Assert.Equal("\"old-etag\"", body.RootElement.GetProperty("eTag").GetString());
             Assert.Equal("Test commit", body.RootElement.GetProperty("message").GetString());
             Assert.False(body.RootElement.GetProperty("validateOnly").GetBoolean());
@@ -177,16 +164,16 @@ public class CommitDocumentsCommandTests
 
             JsonElement documents = body.RootElement.GetProperty("documents");
             Assert.Equal(2, documents.GetArrayLength());
-            Assert.Equal("nsal.xml", documents[0].GetProperty("name").GetString());
+            Assert.Equal("presence.xml", documents[0].GetProperty("name").GetString());
             Assert.Equal(
                 "<ServiceNsal />",
                 DecodeContent(documents[0].GetProperty("content").GetString()));
-            Assert.Equal("titlepriv.xml", documents[1].GetProperty("name").GetString());
+            Assert.Equal("achievements2017.xml", documents[1].GetProperty("name").GetString());
             Assert.Equal(
                 "<TitlePrivileges />",
                 DecodeContent(documents[1].GetProperty("content").GetString()));
 
-            string eTagPath = Path.Combine(directory, "ALL.etag");
+            string eTagPath = Path.Combine(directory, "XDKS.1.etag");
             Assert.Equal("\"new-etag\"", await File.ReadAllTextAsync(eTagPath));
             if (OperatingSystem.IsWindows())
             {
@@ -213,7 +200,7 @@ public class CommitDocumentsCommandTests
             await File.WriteAllTextAsync(firstPath, "<TitlePrivileges />");
             await File.WriteAllTextAsync(secondPath, "<ServiceNsal />");
             ParseResult parsed = Program.BuildRootCommand().Parse(
-                ["xbl", "config", "save", "--type", "account",
+                ["xbl", "config", "save", "--scope", "account",
                     "--file", firstPath, "--file", secondPath, "--validate-only"],
                 Program.NoResponseFileConfig);
             Assert.Empty(parsed.Errors);
@@ -359,7 +346,7 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             using var response = CreateResponse(
                 """{"ValidationInfo":[],"CanCommit":true,"Committed":false}""");
@@ -384,12 +371,55 @@ public class CommitDocumentsCommandTests
                 CancellationToken.None);
 
             Assert.Equal(0, exitCode);
-            Assert.Contains("TYPE", stdout.ToString(), StringComparison.Ordinal);
+            Assert.Contains("SCOPE", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("VALIDATE ONLY", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("CAN COMMIT", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("XDKS.1", stdout.ToString(), StringComparison.Ordinal);
             Assert.Contains("True", stdout.ToString(), StringComparison.Ordinal);
             Assert.Empty(stderr.ToString());
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_ToTheTitleWideDraft_SavesToAllWithTheTitleEtag()
+    {
+        string directory = CreateTemporaryDirectory();
+        try
+        {
+            string documentPath = Path.Combine(directory, "nsal.xml");
+            await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
+            using var response = CreateResponse(
+                """{"ValidationInfo":[],"ETag":"\"new-etag\"","CanCommit":true,"Committed":true}""");
+            var handler = new MockHttpMessageHandler(response);
+            using var client = CreateClient(handler);
+            using var stdout = new StringWriter();
+            using var stderr = new StringWriter();
+
+            int exitCode = await CommitDocumentsCommandFactory.RunAsync(
+                client,
+                12345,
+                "sandbox",
+                Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                "ALL",
+                [documentPath],
+                validateOnly: false,
+                force: false,
+                eTag: null,
+                message: null,
+                OutputOptions.Table(XboxPartnerCommandSupport.DocumentCommitTableView),
+                stdout,
+                stderr,
+                CancellationToken.None);
+
+            Assert.Equal(0, exitCode);
+            using JsonDocument body = JsonDocument.Parse(handler.LastRequestBody!);
+            Assert.Equal("ALL", body.RootElement.GetProperty("sandbox").GetString());
+            Assert.Equal("\"new-etag\"", await File.ReadAllTextAsync(Path.Combine(directory, "Title.etag")));
+            Assert.StartsWith("title ", stdout.ToString().Split(Environment.NewLine)[2], StringComparison.Ordinal);
         }
         finally
         {
@@ -407,8 +437,8 @@ public class CommitDocumentsCommandTests
             string secondDirectory = Path.Combine(directory, "second");
             Directory.CreateDirectory(firstDirectory);
             Directory.CreateDirectory(secondDirectory);
-            string firstPath = Path.Combine(firstDirectory, "nsal.xml");
-            string secondPath = Path.Combine(secondDirectory, "nsal.xml");
+            string firstPath = Path.Combine(firstDirectory, "presence.xml");
+            string secondPath = Path.Combine(secondDirectory, "presence.xml");
             await File.WriteAllTextAsync(firstPath, "first");
             await File.WriteAllTextAsync(secondPath, "second");
             var handler = new MockHttpMessageHandler(CreateResponse("{}"));
@@ -421,7 +451,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [firstPath, secondPath],
                 validateOnly: true,
                 force: false,
@@ -470,7 +500,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [firstPath, secondPath],
                 validateOnly: true,
                 force: false,
@@ -522,7 +552,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [documentPath],
                 validateOnly: true,
                 force: false,
@@ -575,7 +605,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [documentPath],
                 validateOnly: true,
                 force: false,
@@ -602,9 +632,9 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
-            Directory.CreateDirectory(Path.Combine(directory, "ALL.etag"));
+            Directory.CreateDirectory(Path.Combine(directory, "XDKS.1.etag"));
             var handler = new MockHttpMessageHandler(CreateResponse(
                 """{"ValidationInfo":[],"CanCommit":true,"Committed":true}"""));
             using var client = CreateClient(handler);
@@ -616,7 +646,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [documentPath],
                 validateOnly: false,
                 force: true,
@@ -649,9 +679,9 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
-            string eTagPath = Path.Combine(directory, "ALL.etag");
+            string eTagPath = Path.Combine(directory, "XDKS.1.etag");
             await File.WriteAllTextAsync(eTagPath, "\"old-etag\"");
             await using var lockStream = new FileStream(
                 eTagPath,
@@ -669,7 +699,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [documentPath],
                 validateOnly: false,
                 force: true,
@@ -704,7 +734,7 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             using var client = CreateClient(
                 new MockHttpMessageHandler(CreateResponse(responseBody)));
@@ -716,7 +746,7 @@ public class CommitDocumentsCommandTests
                 12345,
                 "sandbox",
                 Guid.NewGuid(),
-                "ALL",
+                "XDKS.1",
                 [documentPath],
                 validateOnly: true,
                 force: false,
@@ -844,7 +874,7 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             using var client = CreateClient(
                 new MockHttpMessageHandler(CreateResponse(responseBody)));
@@ -881,7 +911,7 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             using var client = CreateClient(new MockHttpMessageHandler(CreateResponse(
                 """{"ValidationInfo":[{"Severity":"Error","DocumentName":"nsal\u001b[2J.xml","Error":"Bad\u202eKey","Message":"Line one\r\nWarning: forged line"}],"CanCommit":false,"Committed":false}""")));
@@ -920,13 +950,12 @@ public class CommitDocumentsCommandTests
     [Theory]
     [InlineData(true, """{"ValidationInfo":[{"Severity":"Warning","Error":"FilesNotChangedCommit","Message":"No files changed."}],"CanCommit":false,"Committed":false}""")]
     [InlineData(false, """{"ValidationInfo":[{"Severity":"Warning","Error":"FilesNotChangedCommit","Message":"No files changed."}],"CanCommit":false,"Committed":false}""")]
-    [InlineData(false, """{"ValidationInfo":[{"Severity":"Warning","Error":"FilesNotChangedCommit"}],"CanCommit":false,"Committed":false}""")]
     public async Task RunAsync_Succeeds_WhenTheDocumentsMatchTheLatestOnes(bool validateOnly, string responseBody)
     {
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             using var client = CreateClient(new MockHttpMessageHandler(CreateResponse(responseBody)));
             using var stdout = new StringWriter();
@@ -970,7 +999,7 @@ public class CommitDocumentsCommandTests
             },
             cancellationToken: cancellation.Token);
 
-        Assert.Equal(CommitDocumentsCommandFactory.OutcomeUnknownExitCode, exitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, exitCode);
         Assert.Empty(stdout);
         Assert.Matches(
             "^x-ms-correlation-id: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" + Environment.NewLine +
@@ -1001,12 +1030,12 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             string eTagPath = Path.Combine(directory, "XDKS.1.etag");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
             await File.WriteAllTextAsync(eTagPath, "\"old-etag\"");
             using var cancellation = new CancellationTokenSource();
-            using var client = CreateClient(new RespondingHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
+            using var client = CreateClient(new RoutingHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new CancelOnDisposeContent(
                     """{"ValidationInfo":[],"ETag":"\"new-etag\"","CanCommit":true,"Committed":true}""",
@@ -1033,7 +1062,10 @@ public class CommitDocumentsCommandTests
 
             Assert.True(cancellation.IsCancellationRequested);
             Assert.Equal(0, exitCode);
-            Assert.Empty(stderr.ToString());
+            Assert.Equal(
+                CommitDocumentsCommandFactory.DescribeSaved(
+                    CliIdentity.CommandName, 12345, Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"), "XDKS.1") + Environment.NewLine,
+                stderr.ToString());
             using JsonDocument output = JsonDocument.Parse(stdout.ToString());
             Assert.True(output.RootElement.GetProperty("result").GetProperty("Committed").GetBoolean());
             Assert.Equal(eTagPath, output.RootElement.GetProperty("etagFile").GetString());
@@ -1059,7 +1091,7 @@ public class CommitDocumentsCommandTests
     public void FormatDownloadCheck_ForAccountDocuments_NeedsNoScidOrSandbox()
     {
         Assert.Equal(
-            "xbox xbl config download --type account --view draft --dest <directory>",
+            "xbox xbl config download --scope account --view draft --dest <directory>",
             CommitDocumentsCommandFactory.FormatDownloadCheck(" Account ", null, null));
     }
 
@@ -1067,7 +1099,7 @@ public class CommitDocumentsCommandTests
     public void FormatDownloadCheck_ForAccountDocuments_KeepsTheSeller()
     {
         Assert.Equal(
-            "xbox xbl config download --type account --seller-id 1234567 --view draft --dest <directory>",
+            "xbox xbl config download --scope account --seller-id 1234567 --view draft --dest <directory>",
             CommitDocumentsCommandFactory.FormatDownloadCheck("account", null, null, sellerId: 1234567));
     }
 
@@ -1079,6 +1111,55 @@ public class CommitDocumentsCommandTests
             CommitDocumentsCommandFactory.FormatDownloadCheck("sandbox", null, "XDKS.1", sellerId: 1234567, titleId: "1234ABCD"));
     }
 
+    [Fact]
+    public void FormatDownloadCheck_ForTheTitleWideDraft_UsesTheTitleScope()
+    {
+        Assert.Equal(
+            "xbox xbl config download --title-id 1234ABCD --seller-id 1234567 --scope title --view draft --dest <directory>",
+            CommitDocumentsCommandFactory.FormatDownloadCheck("sandbox", null, "ALL", sellerId: 1234567, titleId: "1234ABCD"));
+    }
+
+    [Fact]
+    public async Task Command_WithTheTitleScope_SavesToTheTitleWideDraft()
+    {
+        string directory = CreateTemporaryDirectory();
+        TextWriter originalOut = Console.Out;
+        TextWriter originalError = Console.Error;
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var handler = new MockHttpMessageHandler(CreateResponse(
+            """{"ValidationInfo":[],"ETag":"\"new-etag\"","CanCommit":true,"Committed":true}"""));
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
+        Program.XboxPartnerClientFactory = configuration => new XboxPartnerClient(
+            configuration,
+            new HttpClient(handler),
+            () => Task.FromResult<string?>("caller-token"));
+        try
+        {
+            string documentPath = Path.Combine(directory, "nsal.xml");
+            await File.WriteAllTextAsync(documentPath, "<ServiceNsal />");
+
+            int exitCode = await Program.Main(
+            [
+                "xbl", "config", "save", "--seller-id", "2", "--scope", "title",
+                "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--file", documentPath, "--force",
+            ]);
+
+            Assert.True(exitCode == 0, stderr.ToString());
+            using JsonDocument body = JsonDocument.Parse(handler.LastRequestBody!);
+            Assert.Equal("ALL", body.RootElement.GetProperty("sandbox").GetString());
+            Assert.True(File.Exists(Path.Combine(directory, "Title.etag")));
+        }
+        finally
+        {
+            Program.XboxPartnerClientFactory = null;
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunCommitAsync(
         Func<HttpResponseMessage> respond,
         bool validateOnly = false,
@@ -1087,9 +1168,9 @@ public class CommitDocumentsCommandTests
         string directory = CreateTemporaryDirectory();
         try
         {
-            string documentPath = Path.Combine(directory, "nsal.xml");
+            string documentPath = Path.Combine(directory, "presence.xml");
             await File.WriteAllTextAsync(documentPath, "<ServiceNsal />", CancellationToken.None);
-            using var client = CreateClient(new RespondingHandler(respond));
+            using var client = CreateClient(new RoutingHttpHandler(_ => respond()));
             using var stdout = new StringWriter();
             using var stderr = new StringWriter();
 
@@ -1114,13 +1195,6 @@ public class CommitDocumentsCommandTests
         {
             Directory.Delete(directory, recursive: true);
         }
-    }
-
-    private sealed class RespondingHandler(Func<HttpResponseMessage> respond) : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken) => Task.FromResult(respond());
     }
 
     private static XboxPartnerClient CreateClient(HttpMessageHandler handler) =>

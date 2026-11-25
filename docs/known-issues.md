@@ -20,20 +20,11 @@ removed in the next one.
    opens a bug report with your environment details filled in. Issues are public, so leave
    out anything you wouldn't share publicly.
 
-## Updating the CLI
-
-### `xbox upgrade` fails with HTTP 301
-
-**Fixed**
-
-The CLI's public repository moved, and [`xbox upgrade`](commands/upgrade.md) in v0.2.1 fails
-with `HTTP 301: GitHub release metadata is unavailable` every time.
-
-**Workaround:** download the latest release by following [Installation](installation.md).
-
 ## Signing in and permissions
 
 ### Some commands don't work yet with a personal Microsoft account
+
+**Fixed**
 
 When you sign in with a personal Microsoft account rather than a work or school account,
 commands for XBOX services configuration, test accounts, packages, playtests, and audiences
@@ -46,8 +37,8 @@ in to the CLI with that account.
 ### `xbox game`, `xbox xbl`, and similar commands don't accept service principals yet
 
 A service principal can sign in, but the `audience`, `game`, `package`, `playtest`, `sandbox`,
-`seller`, `test-account`, and `xbl` commands fail with an authorization error when it runs them,
-because the service they call doesn't accept service principals yet.
+`seller`, `store-listing`, `test-account`, and `xbl` commands fail with an authorization error when
+it runs them, because the service they call doesn't accept service principals yet.
 
 **Workaround:** run those commands as a signed-in user. `xbox playfab` commands work with a
 service principal once a person grants it access with
@@ -71,11 +62,12 @@ be denied, and selecting it in Partner Center isn't known to help.
 
 ### `xbox game` commands ignore `--seller-id`
 
-[`xbox game list`, `xbox game get`, and `xbox game create`](commands/game.md) use the seller you
-last selected in Partner Center, not the one you pass with `--seller-id` or save in
-[context](commands/context.md), so `game create` can create the game in another seller. A
-seller ID that isn't yours, such as a mistyped one, doesn't make them fail; they return your
-own games.
+[`xbox game list`, `xbox game get`, and `xbox game create`](commands/game.md), and
+[`xbox store-listing get`](commands/store-listing.md), use the seller you last selected in Partner
+Center, not the one you pass with `--seller-id` or save in [context](commands/context.md), so
+`game create` can create the game in another seller, and `store-listing get` doesn't find a game of
+another of your sellers. A seller ID that isn't yours, such as a mistyped one, doesn't make them
+fail; they work on your own games.
 
 **Workaround:** select the seller you want in Partner Center, then check that `xbox game list`
 shows its games before you create one. The change can take up to 15 minutes to reach the CLI.
@@ -85,9 +77,16 @@ shows its games before you create one. The change can take up to 15 minutes to r
 When the seller you pass with `--seller-id` or save in [context](commands/context.md) isn't the
 one you last selected in Partner Center,
 [`xbox sandbox list` and `xbox sandbox get`](commands/sandbox.md) find only the `CERT`,
-`CERT.DEBUG`, and `RETAIL` sandboxes, without failing. `xbox sandbox create` creates the
-sandbox in the seller you last selected, and if that's another seller, it exits `4` because it
-can't read the sandbox back. Don't create it again.
+`CERT.DEBUG`, and `RETAIL` sandboxes, without failing. `xbox sandbox list --owned` lists no
+sandboxes, and `xbox sandbox get` with a sandbox number doesn't find the sandbox.
+`xbox sandbox create` acts on the seller you last selected:
+
+- With a sandbox ID that starts with that seller's
+  [account moniker](commands/sandbox.md#sandbox-numbers), it creates the sandbox there, then
+  exits `4` because it can't read the sandbox back. Don't create it again.
+- With a sandbox number or `--free-number`, the sandbox ID starts with the moniker of the seller
+  you passed, so the creation job fails, the command exits `2`, and nothing is created.
+  `--free-number` also names number `0` as free, even when that seller already uses it.
 
 **Workaround:** select the seller you want in Partner Center, then run the command again with
 that seller. The change can take up to 15 minutes to reach the CLI.
@@ -109,6 +108,17 @@ Some published XML documents that
 encoded as UTF-8, so an XML reader that trusts the declaration fails to load them.
 
 **Workaround:** decode the file as UTF-8 before you parse it.
+
+### `xbl config status` and `config diff` can leave out changes after some publishes
+
+After a publish of an older version (`xbox xbl config publish --configset`), the change
+descriptions that
+[`xbox xbl config status`](commands/xbl.md#what-each-change-is) and `xbox xbl config diff` show can leave out saves that
+publish didn't include, and still say `ready`. Each document's `state`, which compares the
+draft with what's published, is still right.
+
+**Workaround:** trust `state` for whether a document differs. To see every difference, run
+`xbox xbl config diff --lines`, which shows each changed line of the draft against the published version.
 
 ## PlayFab
 
@@ -141,14 +151,14 @@ Until then, `--keys` can't name a key that contains a comma. To read one, pass i
 with `/Admin/SetTitleInternalData` instead for internal title data:
 
 ```bash
-xbox --playfab-title-id ABC123 playfab api /Admin/SetTitleData --body '{"Key":"Level,Bonus","Value":null}'
+echo '{"Key":"Level,Bonus","Value":null}' | xbox --playfab-title-id ABC123 playfab api /Admin/SetTitleData --body-file -
 ```
 
 For player data, list the key in `KeysToRemove`, using the update API for the data's
 visibility from [Player data](commands/playfab/player-data.md):
 
 ```bash
-xbox --playfab-title-id ABC123 playfab api /Admin/UpdateUserData --body '{"PlayFabId":"PLAYER123","KeysToRemove":["Level,Bonus"]}'
+echo '{"PlayFabId":"PLAYER123","KeysToRemove":["Level,Bonus"]}' | xbox --playfab-title-id ABC123 playfab api /Admin/UpdateUserData --body-file -
 ```
 
 ## Scripts and agents

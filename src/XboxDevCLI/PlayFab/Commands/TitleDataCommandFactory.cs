@@ -144,6 +144,12 @@ internal static class TitleDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: GetPaths,
+            Examples:
+            [
+                "xbox playfab title-data get MyKey",
+                "xbox playfab title-data get --keys MyKey,OtherKey",
+                "xbox playfab title-data get --internal",
+            ],
             LearnMore: [TierLearnMore]));
     }
 
@@ -262,6 +268,11 @@ internal static class TitleDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: SetPaths,
+            Examples:
+            [
+                "xbox playfab title-data set --key MyKey --value my-value --playfab-title-id ABC123",
+                "xbox playfab title-data set --internal --key MyKey --value my-value --playfab-title-id ABC123",
+            ],
             LearnMore: [TierLearnMore]));
     }
 
@@ -352,6 +363,10 @@ internal static class TitleDataCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: SetPaths,
+            Examples:
+            [
+                "xbox playfab title-data delete --keys MyKey,OldKey --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "The named keys are removed by writing a null value through SetTitleData or " +
                 "SetTitleInternalData, so --confirm does not apply; only the keys named in " +

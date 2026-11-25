@@ -114,7 +114,7 @@ internal static class DownloadAchievementImagesCommandFactory
         command.Options.Add(destinationOption);
         command.Validators.Add(result =>
         {
-            bool all = result.GetValue(allOption);
+            bool all = result.GetFlag(allOption);
             bool hasAssetId = result.GetResult(assetIdOption) is { Tokens.Count: > 0 };
             if (all == hasAssetId)
             {
@@ -140,13 +140,8 @@ internal static class DownloadAchievementImagesCommandFactory
                 using HttpClient downloadClient =
                     Program.AchievementImageDownloadClientFactory?.Invoke()
                     ?? CreateDownloadClient();
-                string baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
-                long? sellerId = await sellerOption.GetSellerIdAsync(
-                    result,
-                    configuration,
-                    client,
-                    baseUrl,
-                    cancellationToken);
+                _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+                long? sellerId = sellerOption.GetSellerId(result);
                 Program.WriteVerbose(
                     verbose,
                     () => all
@@ -167,7 +162,8 @@ internal static class DownloadAchievementImagesCommandFactory
             }
             catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
             {
-                Console.Error.WriteLine($"Request failed: {ex.Message}");
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
+                Console.Error.WriteLine($"Request failed: {NetworkErrors.Describe(ex)}");
                 return 1;
             }
         });
@@ -266,7 +262,8 @@ internal static class DownloadAchievementImagesCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
-            stderr.WriteLine($"Request failed: {ex.Message}");
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
+            stderr.WriteLine($"Request failed: {NetworkErrors.Describe(ex)}");
             return 1;
         }
     }

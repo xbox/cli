@@ -105,12 +105,24 @@ internal static partial class AudienceCommandFactory
     private static Command CreateGetCommand(Func<IConfiguration, XboxPartnerClient>? clientFactory)
     {
         var audienceId = CreateAudienceIdArgument();
+        var membersOnly = new Option<bool>("--members-only")
+        {
+            Description = "Write only the members, one per line, as a members file lists them. Can't be combined "
+                + "with --output.",
+        };
         var seller = XboxPartnerCommandSupport.CreateSellerIdOption();
         var baseUrl = XboxPartnerCommandSupport.CreateBaseUrlOption();
         var command = new Command("get", "Get one audience by ID")
         {
-            audienceId, seller, baseUrl,
+            audienceId, membersOnly, seller, baseUrl,
         };
+        command.Validators.Add(commandResult =>
+        {
+            if (commandResult.GetFlag(membersOnly) && commandResult.GetResult(Program.OutputOption) is { Implicit: false })
+            {
+                commandResult.AddError("--members-only can't be combined with --output: it writes one member per line. Remove --output, or drop --members-only to get the whole audience.");
+            }
+        });
         command.SetAction((ParseResult result, CancellationToken cancellationToken) =>
             ExecuteAsync(
                 result, seller, baseUrl, clientFactory,
@@ -126,6 +138,16 @@ internal static partial class AudienceCommandFactory
                         audience = await client.GetAudienceAsync(url, sellerId, id, cancellationToken);
                     }
 
+                    if (result.GetValue(membersOnly))
+                    {
+                        foreach (var member in MembersOf(audience))
+                        {
+                            Console.Out.WriteLine(member);
+                        }
+
+                        return 0;
+                    }
+
                     Write(ForOutput(audience, "memberCount"), OutputOptions.From(result));
                     return 0;
                 },
@@ -134,19 +156,24 @@ internal static partial class AudienceCommandFactory
             Safety: CommandSafety.ReadOnly,
             Scope: "One audience of the seller selected by --seller-id, XBOX_SELLER_ID, or 'context set'.",
             Output: "The audience as a JSON object as the service returns it, such as name, id, members, " +
-                "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, and TYPE " +
-                "columns.",
+                "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, TYPE, MEMBERS, and " +
+                "MEMBER columns, with a row per member, where MEMBERS is the number of members returned. An " +
+                "audience with no members has one row, with 0 under MEMBERS and '-' under MEMBER. With --members-only, " +
+                "text with one member per line, and nothing for an audience with no members.",
             Examples:
             [
                 "xbox audience get 1152921504606846976",
                 "xbox audience get 1152921504606846976 --seller-id 1234567 --output table",
+                "xbox audience get 1152921504606846976 --members-only",
             ],
             LearnMore:
             [
                 StoredMembersNote,
                 "An audience ID is opaque: pass it exactly as 'xbox audience list' returns it.",
+                "To add or remove a member, save the output of --members-only to a file, edit it, and pass it to " +
+                    "'xbox audience update --members-file'.",
             ],
-            Table: XboxPartnerCommandSupport.AudienceRecordTableView));
+            Table: XboxPartnerCommandSupport.AudienceDetailTableView));
     }
 
     // memberCount counts only the members in the response, which a list never reads, so it isn't output.
@@ -160,6 +187,11 @@ internal static partial class AudienceCommandFactory
 
         return json;
     }
+
+    private static List<string> MembersOf(JsonObject audience) =>
+        audience["members"] is JsonArray array
+            ? array.Select(member => member?.ToString() ?? "").ToList()
+            : throw new InvalidDataException("The audience response has no members list.");
 
     private static bool NameContains(JsonObject audience, string text) =>
         audience["name"] is JsonValue value

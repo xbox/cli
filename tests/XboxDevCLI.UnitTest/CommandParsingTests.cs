@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
+using XboxDevCLI.CommandLine;
 using Xunit;
 
 namespace XboxDevCLI.UnitTest;
@@ -23,6 +24,76 @@ public class CommandParsingTests
         Assert.DoesNotContain(
             rootCommand.Subcommands,
             command => command.Name is "login" or "logout" or "status");
+    }
+
+    /// <summary>
+    /// A command's validators run before the parser checks its options, and GetValue throws for an
+    /// option given without its value, or twice when it takes one, and for a flag given twice with
+    /// values. Parsing must report those instead, whatever comes first: nothing, one other option,
+    /// or a Help example, which reaches the branches a validator takes only for a valid value, such
+    /// as --dest with a .pfx file.
+    /// </summary>
+    [Fact]
+    public void Parse_NeverThrows_ForAMissingOrRepeatedOptionValue()
+    {
+        var root = Program.BuildRootCommand();
+        var failures = new List<string>();
+
+        void Check(string[] args)
+        {
+            try
+            {
+                root.Parse(args, Program.NoResponseFileConfig);
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"xbox {string.Join(' ', args)}: {exception.Message}");
+            }
+        }
+
+        void Walk(Command command, string[] path, Option[] inherited)
+        {
+            Option[] options = [.. inherited, .. command.Options];
+            Option[] valued = [.. options.Where(option => option.Arity.MinimumNumberOfValues > 0)];
+            string[][] before =
+            [
+                path,
+                .. options.Except(valued).Select(flag => (string[])[.. path, flag.Name]),
+                .. valued.SelectMany(option => new string[][] { [.. path, option.Name, "-"], [.. path, option.Name, "1"] }),
+                .. (CommandMetadataRegistry.GetMetadata(command).Examples ?? [])
+                    .Select(example => CommandSurfaceTests.SplitHelpExample(example)[1..]),
+            ];
+            foreach (var option in valued)
+            {
+                foreach (var args in before)
+                {
+                    Check([.. args, option.Name]);
+                    if (option.Arity.MaximumNumberOfValues == 1)
+                    {
+                        Check([.. args, option.Name, "a", option.Name, "b"]);
+                    }
+                }
+            }
+
+            foreach (var flag in options.Except(valued))
+            {
+                foreach (var args in before)
+                {
+                    Check([.. args, flag.Name, "true", flag.Name, "false"]);
+                }
+            }
+
+            foreach (var subcommand in command.Subcommands)
+            {
+                Walk(
+                    subcommand,
+                    [.. path, subcommand.Name],
+                    [.. inherited, .. command.Options.Where(option => option.Recursive)]);
+            }
+        }
+
+        Walk(root, [], []);
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
     }
 
     [Fact]

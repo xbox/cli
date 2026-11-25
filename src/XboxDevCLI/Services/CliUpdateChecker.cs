@@ -22,7 +22,10 @@ internal sealed class CliUpdateChecker(HttpClient client)
         var current = ParseVersion(currentVersion);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(CheckTimeout);
-        using var response = await GetLatestReleaseAsync(deadline.Token);
+        using var request = new HttpRequestMessage(HttpMethod.Get, ProjectLinks.LatestReleaseApi);
+        request.Headers.UserAgent.ParseAdd("XboxDevCLI-UpdateCheck/1.0");
+        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
         if (!response.IsSuccessStatusCode)
         {
             var guidance = response.StatusCode switch
@@ -37,20 +40,13 @@ internal sealed class CliUpdateChecker(HttpClient client)
                 $"HTTP {(int)response.StatusCode}: {guidance} Open {ProjectLinks.Releases} in your browser.");
         }
 
-        if (response.Content.Headers.ContentLength > MaximumMetadataBytes)
-            throw new InvalidDataException("Release metadata exceeds the 1 MiB limit.");
-        await using var input = await response.Content.ReadAsStreamAsync(deadline.Token);
-        using var metadata = new MemoryStream();
-        var buffer = new byte[8192];
-        int read;
-        while ((read = await input.ReadAsync(buffer, deadline.Token)) > 0)
-        {
-            if (metadata.Length + read > MaximumMetadataBytes)
-                throw new InvalidDataException("Release metadata exceeds the 1 MiB limit.");
-            metadata.Write(buffer, 0, read);
-        }
+        var metadata = await ResponseBodyReader.ReadBytesAsync(
+            response.Content,
+            MaximumMetadataBytes,
+            () => new InvalidDataException("Release metadata exceeds the 1 MiB limit."),
+            deadline.Token);
 
-        using var document = JsonDocument.Parse(metadata.ToArray());
+        using var document = JsonDocument.Parse(metadata);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object
             || !root.TryGetProperty("draft", out var draft) || draft.ValueKind != JsonValueKind.False
@@ -78,7 +74,7 @@ internal sealed class CliUpdateChecker(HttpClient client)
             Instructions: updateAvailable
                 ? [
                     $"Open {releaseUrl} and review the release notes and installation instructions.",
-                    "If you installed with WinGet on Windows, run 'winget upgrade Microsoft.Gaming.XBOXDeveloperCLI' instead of the manual steps below. WinGet might get a release a few hours after GitHub.",
+                    "If you installed with WinGet on Windows, run 'winget upgrade XBOX.cli' instead of the manual steps below. WinGet might get a release a few hours after GitHub.",
                     $"For a portable install, download the ZIP for your operating system and CPU architecture and extract the whole archive into a new directory. Installation and PATH steps: {ProjectLinks.InstallationGuide}",
                     "Keep a backup of the old installation. Close running CLI processes before replacing it, especially on Windows.",
                     "Keep any XBOX_ environment variables you set. Settings come from them, command options, and the new release's built-in defaults, not from a settings file.",
@@ -88,34 +84,6 @@ internal sealed class CliUpdateChecker(HttpClient client)
                     "For a source build or other package-managed install, use its original build or installation mechanism instead of manually overwriting managed files. A package channel may lag the GitHub release."
                 ]
                 : []);
-    }
-
-    private async Task<HttpResponseMessage> GetLatestReleaseAsync(CancellationToken cancellationToken)
-    {
-        var uri = new Uri(ProjectLinks.LatestReleaseApi);
-        for (int redirects = 0; ; redirects++)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-            request.Headers.UserAgent.ParseAdd("XboxDevCLI-UpdateCheck/1.0");
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (response.StatusCode is not (HttpStatusCode.MovedPermanently or HttpStatusCode.Redirect
-                or HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect))
-                return response;
-
-            var status = response.StatusCode;
-            var location = response.Headers.Location;
-            response.Dispose();
-            if (redirects == 3)
-                throw new HttpRequestException(
-                    $"HTTP {(int)status}: GitHub release metadata returned too many redirects. Open {ProjectLinks.Releases} in your browser.");
-            if (location is null || !Uri.TryCreate(uri, location, out var destination)
-                || destination.Scheme != Uri.UriSchemeHttps
-                || !destination.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
-                throw new HttpRequestException(
-                    $"HTTP {(int)status}: GitHub release metadata returned an invalid redirect. Only https://api.github.com destinations are allowed. Open {ProjectLinks.Releases} in your browser.");
-            uri = destination;
-        }
     }
 
     private static NuGetVersion ParseVersion(string value)

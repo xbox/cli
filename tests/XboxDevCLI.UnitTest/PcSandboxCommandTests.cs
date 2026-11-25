@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
+using System.Net;
 using System.Text.Json;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Commands;
@@ -82,6 +83,7 @@ public class PcSandboxCommandTests
     [Theory]
     [InlineData("get")]
     [InlineData("set", "XDKS.1", "--confirm")]
+    [InlineData("set", "2", "--seller-id", "1234567", "--confirm")]
     [InlineData("launch-apps")]
     public async Task ToolNotFound_ExplainsHowToInstallIt(params string[] action)
     {
@@ -94,6 +96,7 @@ public class PcSandboxCommandTests
         Assert.Contains("was not found next to the CLI or on PATH", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("XBOX_XBLPCSANDBOX__PATH", result.Stderr, StringComparison.Ordinal);
         Assert.Empty(fake.ToolRuns);
+        Assert.Empty(fake.Service.Requests);
     }
 
     [Theory]
@@ -131,6 +134,161 @@ public class PcSandboxCommandTests
         Assert.Equal("""{"sandbox":"XDKS.1","previousSandbox":"RETAIL"}""", result.Stdout.Trim());
         Assert.Contains("Switching this PC from RETAIL to XDKS.1.", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("  Sandbox is now: XDKS.1", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Set_Number_SwitchesToTheSellersSandboxNamedInThePrompt()
+    {
+        var fake = new FakePc(PcSandbox.Retail)
+        {
+            IsInteractive = true,
+            Answer = "y",
+            Service = new(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"moniker":"abcdef"}""") }),
+        };
+
+        var result = await fake.InvokeAsync(
+            "pc", "sandbox", "set", "2", "--seller-id", "1234567", "--output", "json-compact");
+
+        Assert.Equal(0, result.ExitCode);
+        var request = Assert.Single(fake.Service.Requests);
+        Assert.Equal("/xboxpartner/v1/xboxlive/account", request.RequestUri!.AbsolutePath);
+        Assert.Equal("1234567", Assert.Single(request.Headers["X-DeveloperAccountId"]));
+        Assert.Contains("Sandbox number 2 is sandbox ABCDEF.2.", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Switching this PC from RETAIL to ABCDEF.2 restarts", result.Stderr, StringComparison.Ordinal);
+        Assert.Equal(["/set", "ABCDEF.2"], Assert.Single(fake.SwitchRuns).Arguments);
+        Assert.Equal("""{"sandbox":"ABCDEF.2","previousSandbox":"RETAIL"}""", result.Stdout.Trim());
+    }
+
+    [Fact]
+    public async Task Set_Number_NamesASellerItDidNotGetOnTheCommandLine()
+    {
+        var fake = new FakePc(PcSandbox.Retail)
+        {
+            Service = new(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"moniker":"abcdef"}""") }),
+        };
+        var previous = Environment.GetEnvironmentVariable("XBOX_SELLER_ID");
+        Environment.SetEnvironmentVariable("XBOX_SELLER_ID", "1234567");
+        try
+        {
+            var result = await fake.InvokeAsync("pc", "sandbox", "set", "2", "--confirm");
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("Using --seller-id 1234567 from XBOX_SELLER_ID.", result.Stderr, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XBOX_SELLER_ID", previous);
+        }
+    }
+
+    [Fact]
+    public async Task Set_FullId_NeedsNoSignInSellerOrService()
+    {
+        // Preparing a sign-in fails in this mode without its settings, so a full ID mustn't need one.
+        using var automation = TestEnvironment.UseAuthenticationMode("clientsecret");
+        var fake = new FakePc(PcSandbox.Retail) { Auth = new FakeAuthenticationService(token: null) };
+
+        var result = await fake.InvokeAsync("pc", "sandbox", "set", "ABCDEF.1", "--confirm");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(["/set", "ABCDEF.1"], Assert.Single(fake.SwitchRuns).Arguments);
+        Assert.Empty(fake.Service.Requests);
+        Assert.Equal(0, fake.Auth.TokenRequests);
+        Assert.Equal(0, fake.Auth.AccountRequests);
+    }
+
+    [Theory]
+    [InlineData("01", "Invalid sandbox number '01'")]
+    [InlineData("1000", "Invalid sandbox number '1000'")]
+    [InlineData(null, "Required argument missing")]
+    public async Task Set_InvalidNumber_FailsBeforeAnyRequestOrSwitch(string? number, string message)
+    {
+        var fake = new FakePc(PcSandbox.Retail);
+        string[] args = ["pc", "sandbox", "set", "--seller-id", "1234567", "--confirm"];
+
+        var result = await fake.InvokeAsync(number is null ? args : [.. args, number]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(message, result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Usage:", result.Stderr, StringComparison.Ordinal);
+        Assert.Empty(fake.Service.Requests);
+        Assert.Equal(0, fake.Auth.TokenRequests);
+        Assert.Empty(fake.ToolRuns);
+    }
+
+    [Fact]
+    public async Task Set_Number_MonikerReadFailure_StopsWithoutTouchingThePc()
+    {
+        var fake = new FakePc(PcSandbox.Retail)
+        {
+            Service = new(new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("""{"title":"Problem","detail":"XBOX services returned HTTP 404."}"""),
+            }),
+        };
+
+        var result = await fake.InvokeAsync(
+            "pc", "sandbox", "set", "2", "--seller-id", "1234567", "--confirm");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Single(fake.Service.Requests);
+        Assert.Contains("Sandbox number 2 could not be resolved", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("XBOX services returned HTTP 404.", result.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("which needs no sign-in", result.Stderr, StringComparison.Ordinal);
+        Assert.Equal([["/get"]], fake.ToolRuns.Select(run => run.Arguments));
+    }
+
+    [Fact]
+    public async Task Set_Number_RefusedMonikerRead_SuggestsTheFullId()
+    {
+        var fake = new FakePc(PcSandbox.Retail)
+        {
+            Service = new(new HttpResponseMessage(HttpStatusCode.Forbidden)),
+        };
+
+        var result = await fake.InvokeAsync("pc", "sandbox", "set", "2", "--seller-id", "1234567", "--confirm");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Check that you're signed in and have access to seller 1234567.", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Or pass the full sandbox ID, such as ABCDEF.2", result.Stderr, StringComparison.Ordinal);
+        Assert.Empty(fake.SwitchRuns);
+    }
+
+    [Fact]
+    public async Task Set_Number_SignedOut_StopsWithoutTouchingThePc()
+    {
+        var fake = new FakePc(PcSandbox.Retail) { Auth = new FakeAuthenticationService(token: null) };
+
+        var result = await fake.InvokeAsync("pc", "sandbox", "set", "2", "--seller-id", "1234567", "--confirm");
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Run 'xbox auth login' first", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Or pass the full sandbox ID, such as ABCDEF.2, which needs no sign-in or seller.", result.Stderr, StringComparison.Ordinal);
+        Assert.Empty(fake.Service.Requests);
+        Assert.Empty(fake.SwitchRuns);
+    }
+
+    [Fact]
+    public async Task Set_Number_NoSeller_SuggestsTheFullId()
+    {
+        var fake = new FakePc(PcSandbox.Retail);
+        var previous = Environment.GetEnvironmentVariable("XBOX_SELLER_ID");
+        Environment.SetEnvironmentVariable("XBOX_SELLER_ID", null);
+        try
+        {
+            var result = await fake.InvokeAsync("pc", "sandbox", "set", "2", "--confirm");
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Contains("No seller-id is set.", result.Stderr, StringComparison.Ordinal);
+            Assert.Contains("Or pass the full sandbox ID, such as ABCDEF.2", result.Stderr, StringComparison.Ordinal);
+            Assert.Empty(fake.Service.Requests);
+            Assert.Empty(fake.SwitchRuns);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XBOX_SELLER_ID", previous);
+        }
     }
 
     [Theory]
@@ -522,10 +680,18 @@ public class PcSandboxCommandTests
             }
         }
 
+        /// <summary>Answers the requests a sandbox number makes. None are expected when unset.</summary>
+        public XboxPartnerHttpMessageHandler Service { get; init; } = new();
+
+        public FakeAuthenticationService Auth { get; init; } =
+            new(FakeAuthenticationService.CreateToken(tenantId: "test-tenant"));
+
         public async Task<(int ExitCode, string Stdout, string Stderr)> InvokeAsync(params string[] args)
         {
-            var root = Program.BuildRootCommand(
-                pcCommandFactory: () => PcCommandFactory.Create(Dependencies));
+            using var httpClient = new HttpClient(Service);
+            var root = Program.BuildRootCommand(pcCommandFactory: () => PcCommandFactory.Create(
+                Dependencies,
+                configuration => new XboxPartnerClient(configuration, httpClient, Auth)));
             var oldOut = Console.Out;
             var oldError = Console.Error;
             using var stdout = new StringWriter();
@@ -534,14 +700,17 @@ public class PcSandboxCommandTests
             {
                 Console.SetOut(stdout);
                 Console.SetError(stderr);
-                var exitCode = await root.Parse(args, Program.NoResponseFileConfig)
-                    .InvokeAsync(cancellationToken: Cancellation);
+                ContextResolver.ReadIdentityAsync = _ => SignedInIdentity.FromCacheAsync(Auth, CancellationToken.None);
+                ContextStore.DefaultDirectory = () => Path.Combine(Path.GetTempPath(), $"pc-tests-{Guid.NewGuid():N}");
+                var parseResult = await Program.ResolveContextAsync(root.Parse(args, Program.NoResponseFileConfig), args);
+                var exitCode = parseResult is null ? 1 : await parseResult.InvokeAsync(cancellationToken: Cancellation);
                 return (exitCode, stdout.ToString(), stderr.ToString());
             }
             finally
             {
                 Console.SetOut(oldOut);
                 Console.SetError(oldError);
+                TestEnvironment.Reset();
             }
         }
     }

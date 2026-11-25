@@ -166,6 +166,29 @@ public class TestAccountJobWaiterTests
     }
 
     [Fact]
+    public async Task WaitAsync_WaitsTheUsualIntervalAfterAFailedReadWithoutRetryAfter()
+    {
+        var clock = new FakeClock();
+        var outcomes = new Queue<Func<TestAccountJobResult>>(
+        [
+            () => throw new HttpRequestException("reset"),
+            () => Result("succeeded"),
+        ]);
+
+        TestAccountJobResult final = await TestAccountJobWaiter.WaitAsync(
+            Result("running", TimeSpan.FromSeconds(30)),
+            _ => Task.FromResult(outcomes.Dequeue()()),
+            TimeSpan.FromHours(1),
+            clock.DelayAsync,
+            clock.Now,
+            null,
+            CancellationToken.None);
+
+        Assert.True(final.Job.IsSucceeded);
+        Assert.Equal([TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30)], clock.Delays);
+    }
+
+    [Fact]
     public async Task WaitAsync_ToleratesFewerThanThreeConsecutiveTransientFailures()
     {
         var clock = new FakeClock();
@@ -211,17 +234,22 @@ public class TestAccountJobWaiterTests
             null,
             CancellationToken.None));
 
-        Assert.Equal(TestAccountJobWaiter.MaxConsecutiveReadFailures, reads);
+        Assert.Equal(XboxPartnerPoller.MaxConsecutiveReadFailures, reads);
     }
 
     [Fact]
     public async Task WaitAsync_DoesNotRetryAPermanentFailure()
     {
         var clock = new FakeClock();
+        int reads = 0;
 
         var exception = await Assert.ThrowsAsync<XboxPartnerApiException>(() => TestAccountJobWaiter.WaitAsync(
             Result("running"),
-            _ => throw Api(HttpStatusCode.Forbidden, """{"code":"test_account_access_denied"}"""),
+            _ =>
+            {
+                reads++;
+                throw Api(HttpStatusCode.Forbidden, """{"code":"test_account_access_denied"}""");
+            },
             TimeSpan.FromHours(1),
             clock.DelayAsync,
             clock.Now,
@@ -229,6 +257,7 @@ public class TestAccountJobWaiterTests
             CancellationToken.None));
 
         Assert.Equal(HttpStatusCode.Forbidden, exception.StatusCode);
+        Assert.Equal(1, reads);
     }
 
     [Fact]
@@ -270,7 +299,7 @@ public class TestAccountJobWaiterTests
     [InlineData(HttpStatusCode.NotFound, null, false)]
     public void IsTransient_ClassifiesGatewayFailuresByCode(HttpStatusCode statusCode, string? body, bool expected)
     {
-        Assert.Equal(expected, TestAccountJobWaiter.IsTransient(Api(statusCode, body), CancellationToken.None));
+        Assert.Equal(expected, XboxPartnerPoller.IsTransient(Api(statusCode, body), CancellationToken.None));
     }
 
     [Fact]
@@ -279,9 +308,9 @@ public class TestAccountJobWaiterTests
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
 
-        Assert.True(TestAccountJobWaiter.IsTransient(new TaskCanceledException(), CancellationToken.None));
-        Assert.False(TestAccountJobWaiter.IsTransient(new OperationCanceledException(), cancellation.Token));
-        Assert.False(TestAccountJobWaiter.IsTransient(new InvalidOperationException(), CancellationToken.None));
+        Assert.True(XboxPartnerPoller.IsTransient(new TaskCanceledException(), CancellationToken.None));
+        Assert.False(XboxPartnerPoller.IsTransient(new OperationCanceledException(), cancellation.Token));
+        Assert.False(XboxPartnerPoller.IsTransient(new InvalidOperationException(), CancellationToken.None));
     }
 
     [Theory]
@@ -294,7 +323,7 @@ public class TestAccountJobWaiterTests
     {
         var exception = new HttpRequestException(error, "network failure");
 
-        Assert.Equal(expected, TestAccountJobWaiter.IsTransient(exception, CancellationToken.None));
+        Assert.Equal(expected, XboxPartnerPoller.IsTransient(exception, CancellationToken.None));
     }
 
     internal static TestAccountJobResult Result(string state, TimeSpan? retryAfter = null, int succeeded = 0) =>
@@ -328,14 +357,14 @@ public class TestAccountJobWaiterTests
 public class TestAccountSecretReaderTests
 {
     [Fact]
-    public void Read_FileTrimsOneTrailingNewline()
+    public async Task Read_FileTrimsOneTrailingNewline()
     {
         string path = Path.GetTempFileName();
         try
         {
             File.WriteAllText(path, " secret value \r\n\r\n");
 
-            Assert.Equal(" secret value \r\n", TestAccountSecretReader.Read(path, "--password-file", "Password", Dependencies()));
+            Assert.Equal(" secret value \r\n", await TestAccountSecretReader.ReadAsync(path, "--password-file", "Password", Dependencies(), CancellationToken.None));
         }
         finally
         {
@@ -344,26 +373,41 @@ public class TestAccountSecretReaderTests
     }
 
     [Fact]
-    public void Read_MissingFileExplainsWhichOption()
+    public async Task Read_MissingFileExplainsWhichOption()
     {
         string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "missing.txt");
 
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            TestAccountSecretReader.Read(path, "--password-file", "Password", Dependencies()));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync(path, "--password-file", "Password", Dependencies(), CancellationToken.None));
 
         Assert.StartsWith("Could not read --password-file", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Read_DashReadsStandardInput()
+    public async Task Read_DashReadsStandardInput()
     {
         var dependencies = Dependencies(stdin: "from stdin\n");
 
-        Assert.Equal("from stdin", TestAccountSecretReader.Read("-", "--security-answer-file", "Security answer", dependencies));
+        Assert.Equal("from stdin", await TestAccountSecretReader.ReadAsync("-", "--security-answer-file", "Security answer", dependencies, CancellationToken.None));
     }
 
     [Fact]
-    public void Read_PromptsTwiceInATerminal()
+    public async Task Read_DashRefusesATerminal()
+    {
+        var dependencies = Dependencies(interactive: true);
+
+        var early = Assert.Throws<InvalidOperationException>(() =>
+            TestAccountSecretReader.EnsureSource("-", "--password-file", "Password", dependencies));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync("-", "--password-file", "Password", dependencies, CancellationToken.None));
+
+        Assert.StartsWith("--password-file - reads the password from stdin, which is a terminal here", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Leave out --password-file to type it at a prompt", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(exception.Message, early.Message);
+    }
+
+    [Fact]
+    public async Task Read_PromptsTwiceInATerminal()
     {
         var prompts = new List<string>();
         var dependencies = Dependencies(interactive: true, masked: prompt =>
@@ -372,28 +416,28 @@ public class TestAccountSecretReaderTests
             return "typed";
         });
 
-        Assert.Equal("typed", TestAccountSecretReader.Read(null, "--password-file", "Password", dependencies));
+        Assert.Equal("typed", await TestAccountSecretReader.ReadAsync(null, "--password-file", "Password", dependencies, CancellationToken.None));
         Assert.Equal(["Password: ", "Confirm password: "], prompts);
     }
 
     [Fact]
-    public void Read_MismatchedPromptEntriesFail()
+    public async Task Read_MismatchedPromptEntriesFail()
     {
         var answers = new Queue<string>(["one", "two"]);
         var dependencies = Dependencies(interactive: true, masked: _ => answers.Dequeue());
 
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            TestAccountSecretReader.Read(null, "--password-file", "Password", dependencies));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync(null, "--password-file", "Password", dependencies, CancellationToken.None));
 
         Assert.Equal("The password entries did not match.", exception.Message);
         Assert.DoesNotContain("one", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Read_WithoutATerminalPointsToTheFileOption()
+    public async Task Read_WithoutATerminalPointsToTheFileOption()
     {
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            TestAccountSecretReader.Read(null, "--security-answer-file", "Security answer", Dependencies()));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync(null, "--security-answer-file", "Security answer", Dependencies(), CancellationToken.None));
 
         Assert.Contains("--security-answer-file -", exception.Message, StringComparison.Ordinal);
     }
@@ -401,16 +445,16 @@ public class TestAccountSecretReaderTests
     [Theory]
     [InlineData("")]
     [InlineData("\n")]
-    public void Read_RejectsAnEmptyValue(string stdin)
+    public async Task Read_RejectsAnEmptyValue(string stdin)
     {
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            TestAccountSecretReader.Read("-", "--password-file", "Password", Dependencies(stdin: stdin)));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync("-", "--password-file", "Password", Dependencies(stdin: stdin), CancellationToken.None));
 
         Assert.Equal("The password must not be empty.", exception.Message);
     }
 
     [Fact]
-    public void Read_EmptyPromptEntryIsRejectedWithoutAskingAgain()
+    public async Task Read_EmptyPromptEntryIsRejectedWithoutAskingAgain()
     {
         int prompts = 0;
         var dependencies = Dependencies(interactive: true, masked: _ =>
@@ -419,8 +463,8 @@ public class TestAccountSecretReaderTests
             return string.Empty;
         });
 
-        Assert.Throws<InvalidOperationException>(() =>
-            TestAccountSecretReader.Read(null, "--password-file", "Password", dependencies));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            TestAccountSecretReader.ReadAsync(null, "--password-file", "Password", dependencies, CancellationToken.None));
         Assert.Equal(1, prompts);
     }
 
@@ -442,6 +486,8 @@ public class TestAccountSecretReaderTests
             () => interactive,
             masked ?? (_ => throw new InvalidOperationException("Unexpected prompt.")),
             confirmation ?? (() => throw new InvalidOperationException("Unexpected confirmation.")),
-            () => new StringReader(stdin));
+            () => new StringReader(stdin),
+            // At a terminal, stdin is the terminal; otherwise it's piped.
+            () => !interactive);
     }
 }

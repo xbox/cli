@@ -883,7 +883,7 @@ public class GameCommandTests
     {
         public Task<XboxPartnerGameCreationJob> CreateGameAsync(
             string baseUrl, string sellerId, CreateXboxGameRequest request,
-            CancellationToken cancellationToken = default, Action? onSending = null) =>
+            CancellationToken cancellationToken = default, Action<string>? onSending = null) =>
             throw new NotSupportedException();
 
         public Task<XboxPartnerGameCreationJob> GetGameCreationJobAsync(

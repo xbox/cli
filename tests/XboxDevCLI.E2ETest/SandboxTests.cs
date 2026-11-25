@@ -21,6 +21,18 @@ public class SandboxTests
     }
 
     [LiveFact]
+    public async Task List_Owned_LeavesOutGlobalSandboxes()
+    {
+        CliResult result = await Cli.RunForSellerAsync("sandbox", "list", "--owned");
+
+        JsonElement[] sandboxes = result.Json().Items("sandboxes");
+        result.Check(sandboxes.Any(sandbox => sandbox.Is("sandboxId", Settings.Sandbox)), $"Expected {Settings.Sandbox}.");
+        result.Check(
+            sandboxes.All(sandbox => sandbox.Flag("global") == false && sandbox.Is("sellerId", Settings.SellerId)),
+            $"Expected only sandboxes of seller {Settings.SellerId}.");
+    }
+
+    [LiveFact]
     public async Task Get_ReturnsTheDevelopmentSandbox()
     {
         CliResult result = await Cli.RunForSellerAsync("sandbox", "get", Settings.Sandbox);
@@ -30,6 +42,15 @@ public class SandboxTests
         result.Check(
             sandbox.Flag("global") == false && sandbox.Is("sellerId", Settings.SellerId),
             $"Expected a sandbox of seller {Settings.SellerId}.");
+    }
+
+    [LiveFact]
+    public async Task Get_ByNumber_ReturnsTheDevelopmentSandbox()
+    {
+        string number = Settings.Sandbox[(Settings.Sandbox.LastIndexOf('.') + 1)..];
+        CliResult result = await Cli.RunForSellerAsync("sandbox", "get", number);
+
+        result.Check(result.Json().Is("sandboxId", Settings.Sandbox), $"Expected sandbox number {number} to be {Settings.Sandbox}.");
     }
 
     [LiveFact]
@@ -46,12 +67,7 @@ public class SandboxTests
     {
         CliResult result = await Cli.RunForSellerAsync("sandbox", "get", "ZZZZ.999");
 
-        result.Check(result.ExitCode == 1, "Expected exit code 1.");
-        result.Check(string.IsNullOrWhiteSpace(result.Stdout), "Expected nothing on stdout.");
-        result.Check(
-            result.Stderr.Contains("x-ms-correlation-id:", StringComparison.Ordinal) &&
-                result.Stderr.Contains("HTTP 404", StringComparison.Ordinal),
-            "Expected the correlation ID and a 404 on stderr.");
+        result.CheckServiceError(404);
     }
 
     // Verbose output includes the operation and full response, but must never carry the access token.

@@ -14,12 +14,7 @@ namespace XboxDevCLI.UnitTest;
 public sealed class RequestProgressTests
 {
     private const string ConfigurationResponse =
-        """{"sandbox":"STAGE.0","hasWorkingConfiguration":true,"workingVersion":9}""";
-
-    private const string PublishStatusResponse = """{"Status":"Success"}""";
-
-    private const string StatusOutput =
-        """{"sandbox":"STAGE.0","hasWorkingConfiguration":true,"workingVersion":9,"lastPublish":{"status":"Success","jobId":null,"message":null}}""";
+        """{"scope":"title","sandbox":null,"workingVersion":9,"documents":[],"Status":"Success"}""";
 
     private static readonly Guid Scid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
 
@@ -53,14 +48,14 @@ public sealed class RequestProgressTests
         using var client = CreateClient(new SlowHandler(
             HttpStatusCode.OK,
             ConfigurationResponse,
-            () => stderrBuffer.ToString().Contains("Getting config", StringComparison.Ordinal)));
+            () => stderrBuffer.ToString().Contains("Getting the", StringComparison.Ordinal)));
 
         ProgressLine.TerminalOverride.Value = new(IsTerminal: true, Columns: 20);
         int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client, 12345, Scid, "STAGE.0", OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
+            client, 12345, XboxLiveScope.Title, Scid, null, OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"^(\rGetting configur\.\.\.)+\r {19}\r$", stderrBuffer.ToString());
+        Assert.Matches(@"^(\rGetting the titl\.\.\.)+\r {19}\r$", stderrBuffer.ToString());
     }
 
     [Theory]
@@ -120,15 +115,15 @@ public sealed class RequestProgressTests
         using var client = CreateClient(new SlowHandler(
             HttpStatusCode.OK,
             ConfigurationResponse,
-            () => stderrBuffer.ToString().Contains("Getting configuration status", StringComparison.Ordinal)));
+            () => stderrBuffer.ToString().Contains("Getting the title configuration status", StringComparison.Ordinal)));
 
         ProgressLine.TerminalOverride.Value = new(IsTerminal: true, Columns: 120);
         int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client, 12345, Scid, "STAGE.0", OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
+            client, 12345, XboxLiveScope.Title, Scid, null, OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(StatusOutput + Environment.NewLine, output.ToString());
-        Assert.Matches(@"^(\rGetting configuration status for STAGE\.0\.\.\. \d+s *)+\r +\r$", stderrBuffer.ToString());
+        AssertStatusOutput(output.ToString());
+        Assert.Matches(@"^(\rGetting the title configuration status\.\.\. \d+s *)+\r +\r$", stderrBuffer.ToString());
     }
 
     [Fact]
@@ -140,16 +135,16 @@ public sealed class RequestProgressTests
         using var client = CreateClient(new SlowHandler(
             HttpStatusCode.NotFound,
             """{"message":"Not found"}""",
-            () => stderrBuffer.ToString().Contains("Getting configuration status", StringComparison.Ordinal)));
+            () => stderrBuffer.ToString().Contains("Getting the title configuration status", StringComparison.Ordinal)));
 
         ProgressLine.TerminalOverride.Value = new(IsTerminal: true, Columns: 120);
         int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client, 12345, Scid, "RETAIL", OutputOptions.Json, output, stderr, CancellationToken.None);
+            client, 12345, XboxLiveScope.Title, Scid, null, OutputOptions.Json, output, stderr, CancellationToken.None);
 
         Assert.Equal(1, exitCode);
         Assert.Empty(output.ToString());
         string drawn = stderrBuffer.ToString();
-        Match progress = Regex.Match(drawn, @"^(\rGetting configuration status for RETAIL\.\.\. \d+s *)+\r +\r(?!\n)");
+        Match progress = Regex.Match(drawn, @"^(\rGetting the title configuration status\.\.\. \d+s *)+\r +\r(?!\n)");
         Assert.True(progress.Success, drawn);
         string error = drawn[progress.Length..];
         Assert.NotEmpty(error);
@@ -157,8 +152,8 @@ public sealed class RequestProgressTests
     }
 
     [Theory]
-    [InlineData("list", "Reading configurations", """{"configurations":[]}""")]
-    [InlineData("status", "Getting configuration status for STAGE.0", ConfigurationResponse)]
+    [InlineData("list", "Reading sandboxes", """{"configurations":[],"scope":"title","documents":[]}""")]
+    [InlineData("status", "Getting the title configuration status", ConfigurationResponse)]
     public async Task ResolvedTargetIsWrittenAfterProgressIsErased(string action, string activity, string body)
     {
         using var output = new StringWriter();
@@ -182,17 +177,18 @@ public sealed class RequestProgressTests
                 client, 12345, null, OutputOptions.JsonCompact, output, stderr, CancellationToken.None,
                 titleId: "00000042", verbose: true),
             _ => ConfigStatusCommandFactory.RunAsync(
-                client, 12345, null, "STAGE.0", OutputOptions.JsonCompact, output, stderr, CancellationToken.None,
-                titleId: "00000042", verbose: true),
+                client, 12345, XboxLiveScope.Title, null, null, OutputOptions.JsonCompact, output, stderr,
+                CancellationToken.None, titleId: "00000042", verbose: true),
         });
 
         Assert.Equal(0, exitCode);
         string drawn = stderrBuffer.ToString();
         Match progress = Regex.Match(drawn, $@"^(\r{Regex.Escape(activity)}\.\.\. \d+s *)+\r +\r(?!\n)");
         Assert.True(progress.Success, drawn);
-        Assert.Equal(
+        Assert.StartsWith(
             $"Effective configuration target: seller 12345, title 00000042, SCID {Scid:D}{Environment.NewLine}",
-            drawn[progress.Length..]);
+            drawn[progress.Length..],
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -208,11 +204,20 @@ public sealed class RequestProgressTests
 
         ProgressLine.TerminalOverride.Value = new(IsTerminal: false, Columns: 120);
         int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client, 12345, Scid, "STAGE.0", OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
+            client, 12345, XboxLiveScope.Title, Scid, null, OutputOptions.JsonCompact, output, stderr, CancellationToken.None);
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(StatusOutput + Environment.NewLine, output.ToString());
+        AssertStatusOutput(output.ToString());
         Assert.Empty(stderr.ToString());
+    }
+
+    private static void AssertStatusOutput(string output)
+    {
+        Assert.EndsWith(Environment.NewLine, output, StringComparison.Ordinal);
+        Assert.DoesNotContain('\n', output.TrimEnd());
+        using var json = System.Text.Json.JsonDocument.Parse(output);
+        Assert.Equal("title", json.RootElement.GetProperty("scope").GetString());
+        Assert.Equal("Success", json.RootElement.GetProperty("lastPublish").GetProperty("status").GetString());
     }
 
     private static XboxPartnerClient CreateClient(HttpMessageHandler handler) =>
@@ -252,11 +257,7 @@ public sealed class RequestProgressTests
                 await Task.Delay(wait, cancellationToken);
             }
 
-            string content = statusCode == HttpStatusCode.OK &&
-                request.RequestUri!.AbsolutePath.EndsWith("/publish/status", StringComparison.Ordinal)
-                ? PublishStatusResponse
-                : body;
-            var response = new HttpResponseMessage(statusCode) { Content = new StringContent(content) };
+            var response = new HttpResponseMessage(statusCode) { Content = new StringContent(body) };
             configureResponse?.Invoke(response);
             return response;
         }

@@ -28,9 +28,9 @@ A key is the name of the option it fills in:
 | Key | Option | Variable | Used by |
 | --- | --- | --- | --- |
 | `playfab-title-id` | `--playfab-title-id` | `XBOX_PLAYFAB_TITLE_ID` | [`playfab`](playfab.md) commands |
-| `sandbox-id` | `--sandbox-id` | `XBOX_SANDBOX_ID` | [`xbl`](xbl.md) `config status` and `config publish` |
-| `seller-id` | `--seller-id` | `XBOX_SELLER_ID` | [`audience`](audience.md), [`game`](game.md), [`package`](package.md), [`playtest`](playtest.md), [`sandbox`](sandbox.md), [`test-account`](test-account.md), and [`xbl`](xbl.md) commands |
-| `title-id` | `--title-id` | `XBOX_TITLE_ID` | [`xbl`](xbl.md#title-targeting) `config list`, `config status`, `config publish`, and sandbox-scoped `config download` and `config save` |
+| `sandbox-id` | `--sandbox-id` | `XBOX_SANDBOX_ID` | [`xbl`](xbl.md) `config status`, `config diff`, `config history`, `config download`, `config save`, and `config publish`, with `--scope sandbox`; and the [`xbl global-storage`](xbl/global-storage.md) commands |
+| `seller-id` | `--seller-id` | `XBOX_SELLER_ID` | [`audience`](audience.md), [`game`](game.md), [`package`](package.md), [`pc sandbox set`](pc.md#sandbox-numbers) with a sandbox number, [`playtest`](playtest.md), [`sandbox`](sandbox.md), [`store-listing`](store-listing.md), [`test-account`](test-account.md), and [`xbl`](xbl.md) commands |
+| `title-id` | `--title-id` | `XBOX_TITLE_ID` | [`xbl`](xbl.md#title-targeting) `config list`, `config status`, `config diff`, `config history`, `config publish`, and `config download` and `config save` with `--scope sandbox` or `title`; and the [`xbl global-storage`](xbl/global-storage.md) commands |
 
 No other option takes a saved value or a variable.
 
@@ -46,10 +46,23 @@ When a command takes one of these options, it uses the first value it finds:
 2. The option's `XBOX_` variable, such as `XBOX_SELLER_ID`. A blank variable counts as unset.
 3. The value saved with `context set` in the selected [profile](#profiles).
 
+In bash or zsh:
+
 ```bash
 xbox context set playfab-title-id ABC123
 xbox playfab title-data get                                # uses ABC123
 XBOX_PLAYFAB_TITLE_ID=DEF456 xbox playfab title-data get   # uses DEF456
+xbox --playfab-title-id GHI789 playfab title-data get      # uses GHI789
+```
+
+In PowerShell:
+
+```powershell
+xbox context set playfab-title-id ABC123
+xbox playfab title-data get                                # uses ABC123
+$env:XBOX_PLAYFAB_TITLE_ID = "DEF456"
+xbox playfab title-data get                                # uses DEF456
+Remove-Item Env:XBOX_PLAYFAB_TITLE_ID                      # back to ABC123
 xbox --playfab-title-id GHI789 playfab title-data get      # uses GHI789
 ```
 
@@ -79,10 +92,16 @@ xbox --profile test playfab title-data get               # uses TEST1
 xbox playfab title-data get                              # uses the default profile
 ```
 
-To use a profile for every command in a shell, set `XBOX_PROFILE`:
+To use a profile for every command in a shell, set `XBOX_PROFILE`. In bash or zsh:
 
 ```bash
 export XBOX_PROFILE=test
+```
+
+In PowerShell:
+
+```powershell
+$env:XBOX_PROFILE = "test"
 ```
 
 To list your profiles:

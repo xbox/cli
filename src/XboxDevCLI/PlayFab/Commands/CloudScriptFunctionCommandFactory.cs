@@ -80,18 +80,6 @@ internal static class CloudScriptFunctionCommandFactory
         };
     }
 
-    internal static (string apiPath, RegisterHttpFunctionRequest request) BuildRegisterHttpFunctionCall(
-        string name, string url, string? functionKey = null)
-    {
-        var request = new RegisterHttpFunctionRequest
-        {
-            FunctionName = name,
-            FunctionUrl = functionKey is null ? url : AppendFunctionKey(url, functionKey),
-        };
-
-        return (RegisterHttpFunctionPath, request);
-    }
-
     /// <summary>
     /// Returns whether <paramref name="url"/>'s query string has a <c>code</c> parameter, which is
     /// where Azure Functions reads a function key from. The name is compared after
@@ -201,17 +189,6 @@ internal static class CloudScriptFunctionCommandFactory
         return key;
     }
 
-    internal static (string apiPath, UnregisterFunctionRequest request) BuildUnregisterFunctionCall(
-        string name)
-    {
-        var request = new UnregisterFunctionRequest
-        {
-            FunctionName = name,
-        };
-
-        return (UnregisterFunctionPath, request);
-    }
-
     private static Command CreateListCommand()
     {
         var typeOption = new Option<string?>("--type")
@@ -227,6 +204,7 @@ internal static class CloudScriptFunctionCommandFactory
                 result.AddError($"Invalid value for --type. Allowed values: {string.Join(", ", ListFunctionTypes)}.");
             }
         });
+        typeOption.CompletionSources.Add(ListFunctionTypes);
 
         var command = new Command("list", "List registered Azure Functions")
         {
@@ -247,6 +225,11 @@ internal static class CloudScriptFunctionCommandFactory
                 ListHttpFunctionsPath,
                 ListQueuedFunctionsPath,
                 ListEventHubFunctionsPath,
+            ],
+            Examples:
+            [
+                "xbox playfab cloudscript function list --output table",
+                "xbox playfab cloudscript function list --type http",
             ],
             // Bound to the default --type's model. The other three responses are checked by the
             // metadata validator, which walks every path this command can dispatch to, so a
@@ -400,8 +383,13 @@ internal static class CloudScriptFunctionCommandFactory
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
-        var (apiPath, request) = BuildRegisterHttpFunctionCall(name, url, functionKey);
-        return RunAsync(client, apiPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
+        var request = new RegisterHttpFunctionRequest
+        {
+            FunctionName = name,
+            FunctionUrl = functionKey is null ? url : AppendFunctionKey(url, functionKey),
+        };
+
+        return RunAsync(client, RegisterHttpFunctionPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
     }
 
     private static Command CreateUnregisterCommand()
@@ -429,6 +417,10 @@ internal static class CloudScriptFunctionCommandFactory
         // function in Azure.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [UnregisterFunctionPath],
+            Examples:
+            [
+                "xbox playfab cloudscript function unregister --name MatchWebhook --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "Removes the title's registration; the Azure Function itself is untouched."));
     }
@@ -446,7 +438,11 @@ internal static class CloudScriptFunctionCommandFactory
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
-        var (apiPath, request) = BuildUnregisterFunctionCall(name);
-        return RunAsync(client, apiPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
+        var request = new UnregisterFunctionRequest
+        {
+            FunctionName = name,
+        };
+
+        return RunAsync(client, UnregisterFunctionPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
     }
 }

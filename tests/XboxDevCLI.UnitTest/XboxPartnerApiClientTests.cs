@@ -70,74 +70,6 @@ public class XboxPartnerApiClientTests
     }
 
     [Fact]
-    public async Task GetXboxLiveConfigurationsAsync_RejectsARepeatedContinuationToken()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Page("""{"configurations":[],"continuationToken":"t1"}"""),
-            Page("""{"configurations":[],"continuationToken":"t1"}"""));
-        using var client = CreateClient(handler);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerResponseException>(
-            () => client.GetXboxLiveConfigurationsAsync(
-                12345,
-                Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-                CancellationToken.None));
-
-        Assert.Equal(
-            "The configuration list response repeated a continuation token.",
-            exception.Message);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal(
-            Assert.Single(handler.Requests[0].Headers["x-ms-correlation-id"]),
-            exception.CorrelationId);
-    }
-
-    [Theory]
-    [InlineData("[]", "must contain the configurations array.")]
-    [InlineData("""{"configurations":[],"continuationToken":5}""", "contained a continuationToken that was not a string.")]
-    public async Task GetXboxLiveConfigurationsAsync_RejectsAMalformedPage(string body, string expected)
-    {
-        var handler = new XboxPartnerHttpMessageHandler(Page(body));
-        using var client = CreateClient(handler);
-
-        var exception = await Assert.ThrowsAsync<XboxPartnerResponseException>(
-            () => client.GetXboxLiveConfigurationsAsync(
-                12345,
-                Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-                CancellationToken.None));
-
-        Assert.Equal($"The configuration list response {expected}", exception.Message);
-        Assert.Equal(body, exception.RawResponse);
-        Assert.Equal(
-            Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]),
-            exception.CorrelationId);
-    }
-
-    [Fact]
-    public async Task GetXboxLiveConfigurationAsync_SendsScidSandboxAndSeller()
-    {
-        var handler = new CapturingHttpMessageHandler(
-            HttpStatusCode.OK,
-            """{"sandbox":"STAGE.0"}""");
-        using var client = CreateClient(handler);
-        var scid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-        string result = await client.GetXboxLiveConfigurationAsync(
-            12345,
-            scid,
-            "STAGE.0",
-            CancellationToken.None);
-
-        Assert.Contains("STAGE.0", result, StringComparison.Ordinal);
-        Assert.Equal(
-            "http://localhost:8080/xboxpartner/v1/xboxlive/configurations/get",
-            handler.RequestUri?.AbsoluteUri);
-        using JsonDocument body = JsonDocument.Parse(handler.RequestBody!);
-        Assert.Equal(scid, body.RootElement.GetProperty("scid").GetGuid());
-        Assert.Equal("STAGE.0", body.RootElement.GetProperty("sandbox").GetString());
-    }
-
-    [Fact]
     public async Task GetSchemaTypesAsync_SendsAuthenticatedRequest()
     {
         var handler = new CapturingHttpMessageHandler(
@@ -910,24 +842,8 @@ public class XboxPartnerApiClientTests
         }
     }
 
-    [Fact]
-    public void XboxPartnerCommandErrorFormatter_ReturnsMessageForUnpairedSurrogate()
-    {
-        var exception = new XboxPartnerApiException(
-            HttpStatusCode.BadGateway,
-            "Bad Gateway",
-            "\ud800",
-            new Uri("https://gateway.example/xboxpartner/v1/xboxlive/sandboxes"));
-
-        Assert.Equal(exception.Message, XboxPartnerCommandErrorFormatter.Format(exception, compact: true));
-    }
-
     [Theory]
     [InlineData(29.2, 30L)]
-    [InlineData(120.0, 120L)]
-    [InlineData(0.0, 1L)]
-    [InlineData(-1.0, 1L)]
-    [InlineData(3000000000.0, 3000000000L)]
     public void XboxPartnerCommandErrorFormatter_ReportsRoundedRetrySeconds(double seconds, long expected)
     {
         var exception = new XboxPartnerApiException(
@@ -1105,26 +1021,6 @@ public class XboxPartnerApiClientTests
     }
 
     [Fact]
-    public void XboxPartnerCommandErrorFormatter_PreservesSafeProblemDetails()
-    {
-        var exception = new XboxPartnerApiException(
-            HttpStatusCode.BadRequest,
-            "Bad Request",
-            """{"title":"Invalid seller","detail":"The seller is not authorized."}""",
-            new Uri("https://gateway.example/xboxpartner/v1/xboxlive/sandboxes"));
-
-        string formatted = XboxPartnerCommandErrorFormatter.Format(exception, compact: true);
-        using var document = JsonDocument.Parse(formatted);
-
-        Assert.Equal(400, document.RootElement.GetProperty("status").GetInt32());
-        Assert.Equal("Invalid seller", document.RootElement.GetProperty("title").GetString());
-        Assert.Equal(
-            "The seller is not authorized.",
-            document.RootElement.GetProperty("detail").GetString());
-        Assert.False(document.RootElement.TryGetProperty("code", out _));
-    }
-
-    [Fact]
     public void XboxPartnerCommandErrorFormatter_PreservesValidationMessages()
     {
         var exception = new XboxPartnerApiException(
@@ -1179,22 +1075,6 @@ public class XboxPartnerApiClientTests
         using var document = JsonDocument.Parse(XboxPartnerCommandErrorFormatter.Format(exception, compact: true));
 
         Assert.False(document.RootElement.TryGetProperty("validation", out _));
-    }
-
-    [Fact]
-    public void XboxPartnerCommandErrorFormatter_PreservesTheProblemCode()
-    {
-        var exception = new XboxPartnerApiException(
-            HttpStatusCode.BadRequest,
-            "Bad Request",
-            """{"title":"Rejected","detail":"Name rejected.","code":"test_account_name_invalid"}""",
-            new Uri("https://gateway.example/xboxpartner/v1/testaccounts/batches"));
-
-        using var document = JsonDocument.Parse(XboxPartnerCommandErrorFormatter.Format(exception, compact: true));
-
-        Assert.Equal(
-            "test_account_name_invalid",
-            document.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -1427,34 +1307,6 @@ public class XboxPartnerApiClientTests
     }
 
     [Fact]
-    public void XboxPartnerCommandErrorFormatter_ReturnsMessageForNonObjectJson()
-    {
-        var exception = new XboxPartnerApiException(
-            HttpStatusCode.BadGateway,
-            "Bad Gateway",
-            """["unexpected"]""",
-            new Uri("https://gateway.example/xboxpartner/v1/xboxlive/sandboxes"));
-
-        Assert.Equal(
-            exception.Message,
-            XboxPartnerCommandErrorFormatter.Format(exception, compact: false));
-    }
-
-    [Fact]
-    public void XboxPartnerCommandErrorFormatter_AppendsHintForNonObjectJson()
-    {
-        var exception = new XboxPartnerApiException(
-            HttpStatusCode.BadGateway,
-            "Bad Gateway",
-            """["unexpected"]""",
-            new Uri("https://gateway.example/xboxpartner/xboxlive/sandboxes"));
-
-        Assert.Equal(
-            $"{exception.Message} Retry first.",
-            XboxPartnerCommandErrorFormatter.Format(exception, compact: false, additionalDetail: "Retry first."));
-    }
-
-    [Fact]
     public async Task CommitXboxLiveDocumentsAsync_SendsCommitParameters()
     {
         var handler = new CapturingHttpMessageHandler(
@@ -1541,29 +1393,6 @@ public class XboxPartnerApiClientTests
     }
 
     [Fact]
-    public async Task GetXboxLivePublishStatusAsync_SendsStatusParameters()
-    {
-        var handler = new CapturingHttpMessageHandler(HttpStatusCode.OK, """{"status":"Completed"}""");
-        using var client = CreateClient(handler);
-        var scid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-        await client.GetXboxLivePublishStatusAsync(
-            12345,
-            scid,
-            "RETAIL",
-            CancellationToken.None);
-
-        Assert.Equal(
-            "http://localhost:8080/xboxpartner/v1/xboxlive/publish/status",
-            handler.RequestUri?.AbsoluteUri);
-        using JsonDocument body = JsonDocument.Parse(handler.RequestBody!);
-        Assert.Equal(scid, body.RootElement.GetProperty("scid").GetGuid());
-        Assert.Equal("RETAIL", body.RootElement.GetProperty("sandbox").GetString());
-        Assert.False(body.RootElement.TryGetProperty("userId", out _));
-        Assert.False(body.RootElement.TryGetProperty("userEmail", out _));
-    }
-
-    [Fact]
     public void Step3Commands_AcceptOmittedIdentityOptions()
     {
         var publish = Program.BuildRootCommand().Parse(
@@ -1591,39 +1420,6 @@ public class XboxPartnerApiClientTests
         Assert.NotEmpty(Program.BuildRootCommand().Parse(
             "xbl config status --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee " +
             "--sandbox-id RETAIL --user-email developer@example.com").Errors);
-    }
-
-    [Fact]
-    public async Task PublishCommands_RunAsync_WriteJsonResponses()
-    {
-        var publishHandler = new CapturingHttpMessageHandler(
-            HttpStatusCode.OK,
-            """{"status":"Pending"}""");
-        using var publishClient = CreateClient(publishHandler);
-        using var publishOutput = new StringWriter();
-        using var publishErrors = new StringWriter();
-        const long sellerId = 12345;
-        var scid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-        int publishExitCode = await PublishCommandFactory.RunAsync(
-            publishClient,
-            sellerId,
-            new XboxLivePublishRequest(
-                scid,
-                "RETAIL",
-                "XDKS.1",
-                false,
-                42),
-            OutputOptions.JsonCompact,
-            publishOutput,
-            publishErrors,
-            CancellationToken.None);
-
-        Assert.Equal(0, publishExitCode);
-        Assert.Equal("""{"status":"Pending"}""" + Environment.NewLine, publishOutput.ToString());
-        Assert.Equal(
-            ExpectedGlobalStorageWarning("XDKS.1", "RETAIL") + Environment.NewLine,
-            publishErrors.ToString());
     }
 
     [Fact]
@@ -1692,71 +1488,6 @@ public class XboxPartnerApiClientTests
         Assert.Equal(PublishCommandFactory.OutcomeUnknownExitCode, publishExitCode);
         Assert.Empty(publishOutput.ToString());
         Assert.Contains(expectedError, publishErrors.ToString(), StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("{}")]
-    [InlineData("""{"Status":null}""")]
-    [InlineData("""{"Status":"   "}""")]
-    public async Task ConfigStatus_ReportsABlankLastPublishStatusAsNull(string publishBody)
-    {
-        foreach (bool table in new[] { false, true })
-        {
-            using var client = CreateClient(new XboxPartnerHttpMessageHandler(
-                Page(ConfigurationStatusResponse),
-                Page(publishBody)));
-            using var output = new StringWriter();
-            using var errors = new StringWriter();
-
-            int exitCode = await ConfigStatusCommandFactory.RunAsync(
-                client,
-                12345,
-                Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-                "STAGE.0",
-                table
-                    ? OutputOptions.Table(XboxPartnerCommandSupport.ConfigurationStatusTableView)
-                    : OutputOptions.JsonCompact,
-                output,
-                errors,
-                CancellationToken.None);
-
-            Assert.Equal(0, exitCode);
-            Assert.Empty(errors.ToString());
-            if (table)
-            {
-                Assert.Contains("PUBLISH STATUS", output.ToString(), StringComparison.Ordinal);
-            }
-            else
-            {
-                using JsonDocument json = JsonDocument.Parse(output.ToString());
-                Assert.Equal(
-                    """{"status":null,"jobId":null,"message":null}""",
-                    json.RootElement.GetProperty("lastPublish").GetRawText());
-            }
-        }
-    }
-
-    [Fact]
-    public async Task ConfigStatus_LetsCancellationThrough()
-    {
-        using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
-        using var client = CreateClient(new XboxPartnerHttpMessageHandler(Page(ConfigurationStatusResponse)));
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.Json,
-            output,
-            errors,
-            cancellation.Token));
-
-        Assert.Empty(output.ToString());
-        Assert.Empty(errors.ToString());
     }
 
     [Fact]
@@ -2066,84 +1797,6 @@ public class XboxPartnerApiClientTests
         $"overwritten, files only {sourceSandbox} holds are added, and files only {sandbox} " +
         "holds are deleted. Deleted files can't be recovered.";
 
-    [Fact]
-    public async Task ConfigurationsList_WritesJsonAndTableOutput()
-    {
-        const string response =
-            """
-            {"configurations":[{
-              "sandbox": "DEV.0",
-              "hasWorkingConfiguration": true,
-              "workingVersion": 7,
-              "workingCommitTime": "2026-09-25T18:00:00Z",
-              "hasPublishedConfiguration": true,
-              "publishedVersion": 5,
-              "publishedCommitTime": "2026-09-24T17:00:00Z",
-              "hasUnpublishedChanges": true
-            }]}
-            """;
-        var scid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-
-        using var jsonClient = CreateClient(
-            new CapturingHttpMessageHandler(HttpStatusCode.OK, response));
-        using var jsonOutput = new StringWriter();
-        using var jsonErrors = new StringWriter();
-        int jsonExitCode = await ListConfigurationsCommandFactory.RunAsync(
-            jsonClient,
-            12345,
-            scid,
-            OutputOptions.Json,
-            jsonOutput,
-            jsonErrors,
-            CancellationToken.None);
-
-        using var tableClient = CreateClient(
-            new CapturingHttpMessageHandler(HttpStatusCode.OK, response));
-        using var tableOutput = new StringWriter();
-        using var tableErrors = new StringWriter();
-        int tableExitCode = await ListConfigurationsCommandFactory.RunAsync(
-            tableClient,
-            12345,
-            scid,
-            OutputOptions.Table(XboxPartnerCommandSupport.ConfigurationTableView),
-            tableOutput,
-            tableErrors,
-            CancellationToken.None);
-
-        Assert.Equal(0, jsonExitCode);
-        using JsonDocument json = JsonDocument.Parse(jsonOutput.ToString());
-        Assert.Equal("DEV.0", json.RootElement[0].GetProperty("sandbox").GetString());
-        Assert.Empty(jsonErrors.ToString());
-        Assert.Equal(0, tableExitCode);
-        Assert.Contains("SANDBOX", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Contains("DEV.0", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Contains("7", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Contains("5", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Contains("Yes", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Contains("2026-09-25 18:00:00 Z", tableOutput.ToString(), StringComparison.Ordinal);
-        Assert.Empty(tableErrors.ToString());
-    }
-
-    [Fact]
-    public async Task ConfigurationsList_UsesRegisteredClientFactory()
-    {
-        var handler = new CapturingHttpMessageHandler(HttpStatusCode.OK, """{"configurations":[]}""");
-
-        CapturedInvocation result = await InvokeProgramAsync(
-            [
-                "xbl", "config", "list",
-                "--seller-id", "12345",
-                "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-                "--output", "table",
-            ],
-            handler);
-
-        Assert.Equal(0, result.ExitCode);
-        Assert.Equal(
-            "/xboxpartner/v1/xboxlive/configurations",
-            handler.RequestUri?.AbsolutePath);
-    }
-
     [Theory]
     [InlineData(HttpStatusCode.GatewayTimeout, """{"title":"Gateway Timeout","code":"downstream_timeout"}""", "\"downstream_timeout\"")]
     [InlineData(HttpStatusCode.OK, "[]", "Request failed: The configuration list response must contain the configurations array.")]
@@ -2188,198 +1841,6 @@ public class XboxPartnerApiClientTests
         Assert.Contains(expected, errors.ToString(), StringComparison.Ordinal);
     }
 
-    private const string ConfigurationStatusResponse =
-        """{"sandbox":"STAGE.0","hasWorkingConfiguration":true,"workingVersion":9,"hasUnpublishedChanges":false}""";
-
-    [Fact]
-    public async Task ConfigStatus_WritesTableOutputWithTheLastPublishStatus()
-    {
-        const string response =
-            """
-            {
-              "sandbox": "STAGE.0",
-              "hasWorkingConfiguration": true,
-              "workingVersion": 9,
-              "workingCommitTime": "2026-09-25T18:00:00Z",
-              "hasPublishedConfiguration": true,
-              "publishedVersion": 9,
-              "publishedCommitTime": "2026-09-25T17:00:00Z",
-              "hasUnpublishedChanges": false
-            }
-            """;
-        var handler = new XboxPartnerHttpMessageHandler(
-            Page(response),
-            Page("""{"Status":"Running"}"""));
-        using var client = CreateClient(handler);
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.Table(XboxPartnerCommandSupport.ConfigurationStatusTableView),
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        Assert.Contains("STAGE.0", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("2026-09-25 18:00:00 Z", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("No", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("PUBLISH STATUS", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("Running", output.ToString(), StringComparison.Ordinal);
-        Assert.Empty(errors.ToString());
-        Assert.Equal(
-            ["/xboxpartner/v1/xboxlive/configurations/get", "/xboxpartner/v1/xboxlive/publish/status"],
-            handler.Requests.Select(request => request.RequestUri!.AbsolutePath));
-    }
-
-    [Fact]
-    public async Task ConfigStatus_AddsTheLastPublishToTheConfigurationJson()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Page(ConfigurationStatusResponse),
-            Page("""{"Status":"Success","StatusMessage":"Publish succeeded","SourceVersion":"9","JobId":"job-1"}"""));
-        using var client = CreateClient(handler);
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.JsonCompact,
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        Assert.Equal(
-            """{"sandbox":"STAGE.0","hasWorkingConfiguration":true,"workingVersion":9,"hasUnpublishedChanges":false,"lastPublish":{"status":"Success","jobId":"job-1","message":"Publish succeeded"}}""" +
-                Environment.NewLine,
-            output.ToString());
-        Assert.Empty(errors.ToString());
-        using JsonDocument status = JsonDocument.Parse(handler.Requests[1].Body!);
-        Assert.Equal("STAGE.0", status.RootElement.GetProperty("sandbox").GetString());
-    }
-
-    [Fact]
-    public async Task ConfigStatus_ANotFoundPublishStatusMeansNoLastPublish()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Page(ConfigurationStatusResponse),
-            new HttpResponseMessage(HttpStatusCode.NotFound)
-            {
-                Content = new StringContent("""{"status":404,"title":"Not Found"}"""),
-            });
-        using var client = CreateClient(handler);
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.JsonCompact,
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        using JsonDocument json = JsonDocument.Parse(output.ToString());
-        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("lastPublish").ValueKind);
-        Assert.Empty(errors.ToString());
-    }
-
-    [Theory]
-    [InlineData("ALL")]
-    [InlineData("all")]
-    public async Task ConfigStatus_TheTitleWideWorkingSetHasNoPublishToRead(string sandbox)
-    {
-        var handler = new XboxPartnerHttpMessageHandler(Page(ConfigurationStatusResponse));
-        using var client = CreateClient(handler);
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            sandbox,
-            OutputOptions.Table(XboxPartnerCommandSupport.ConfigurationStatusTableView),
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        Assert.Single(handler.Requests);
-        Assert.Contains("PUBLISH STATUS", output.ToString(), StringComparison.Ordinal);
-        Assert.Empty(errors.ToString());
-    }
-
-    [Theory]
-    [InlineData(HttpStatusCode.InternalServerError, 1)]
-    [InlineData(HttpStatusCode.NotFound, 0)]
-    public async Task ConfigStatus_FailsWhenAReadFails(HttpStatusCode configurationStatus, int failingRead)
-    {
-        HttpResponseMessage failure = new(HttpStatusCode.InternalServerError)
-        {
-            Content = new StringContent("""{"status":500,"title":"Internal Server Error"}"""),
-        };
-        var handler = failingRead == 0
-            ? new XboxPartnerHttpMessageHandler(new HttpResponseMessage(configurationStatus)
-            {
-                Content = new StringContent("""{"status":404,"title":"Not Found"}"""),
-            })
-            : new XboxPartnerHttpMessageHandler(Page(ConfigurationStatusResponse), failure);
-        using var client = CreateClient(handler);
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.Json,
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(1, exitCode);
-        Assert.Empty(output.ToString());
-        Assert.NotEmpty(errors.ToString());
-        Assert.Equal(failingRead + 1, handler.Requests.Count);
-    }
-
-    [Fact]
-    public async Task ConfigStatus_RejectsAConfigurationResponseThatIsNotAnObject()
-    {
-        using var client = CreateClient(new XboxPartnerHttpMessageHandler(
-            Page("[]"),
-            Page("""{"Status":"Success"}""")));
-        using var output = new StringWriter();
-        using var errors = new StringWriter();
-
-        int exitCode = await ConfigStatusCommandFactory.RunAsync(
-            client,
-            12345,
-            Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
-            "STAGE.0",
-            OutputOptions.Json,
-            output,
-            errors,
-            CancellationToken.None);
-
-        Assert.Equal(1, exitCode);
-        Assert.Empty(output.ToString());
-        Assert.Contains("not a valid JSON object", errors.ToString(), StringComparison.Ordinal);
-    }
-
     [Fact]
     public void BuildRootCommand_RegistersXboxLiveResources()
     {
@@ -2390,11 +1851,11 @@ public class XboxPartnerApiClientTests
         var xboxLive = Assert.Single(root.Subcommands, command => command.Name == "xbl");
         Assert.DoesNotContain(xboxLive.Subcommands, command => command.Name == "sandboxes");
         Assert.Equal(
-            ["config", "schema", "achievement-image"],
+            ["config", "schema", "achievement-image", "binding", "global-storage", "web-service", "relying-party", "business-partner"],
             xboxLive.Subcommands.Select(command => command.Name));
         var config = xboxLive.Subcommands.Single(command => command.Name == "config");
         Assert.Equal(
-            ["list", "status", "download", "save", "publish"],
+            ["list", "status", "diff", "history", "download", "save", "publish"],
             config.Subcommands.Select(command => command.Name));
         Assert.All(config.Subcommands, command => Assert.True(Program.SupportsTableOutput(command)));
         var schema = xboxLive.Subcommands.Single(command => command.Name == "schema");

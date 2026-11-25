@@ -17,6 +17,9 @@ namespace XboxDevCLI.Commands;
 
 internal static class XboxPartnerCommandSupport
 {
+    /// <summary>Exit code when a write was sent but its outcome is unknown.</summary>
+    internal const int OutcomeUnknownExitCode = 3;
+
     /// <summary>True when a person can answer a prompt: stdin and stderr are both a terminal.</summary>
     public static bool IsInteractiveTerminal() =>
         Environment.UserInteractive && !Console.IsInputRedirected && !Console.IsErrorRedirected;
@@ -32,18 +35,16 @@ internal static class XboxPartnerCommandSupport
 
     /// <summary>
     /// Reads a string property from a gateway object, returning an empty string when it is
-    /// absent, null, or not a string. A non-object entry is rejected outright, as is a missing
-    /// value for a <paramref name="required"/> property.
+    /// absent, null, or not a string. A non-object entry is rejected outright.
     /// </summary>
     /// <remarks>
-    /// Property names are matched exactly, because the gateway emits camelCase and every name
-    /// looked up here is a literal in this assembly rather than user input. Matching loosely
-    /// would absorb a gateway contract change silently instead of surfacing it. The
+    /// Property names are matched exactly, because each name looked up here is a literal in this
+    /// assembly, spelled as the gateway sends it, rather than user input. Matching loosely would
+    /// absorb a gateway contract change silently instead of surfacing it. The
     /// <see cref="JsonValueKind"/> check is what keeps a missing or non-string value from
-    /// throwing out of <see cref="JsonElement.GetString"/>; both the table formatter and seller
-    /// lookup read through here so neither can accept a payload the other rejects.
+    /// throwing out of <see cref="JsonElement.GetString"/>.
     /// </remarks>
-    public static string ReadString(JsonElement element, string propertyName, bool required = false)
+    public static string ReadString(JsonElement element, string propertyName)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
@@ -51,18 +52,10 @@ internal static class XboxPartnerCommandSupport
                 "The response contained an entry that was not an object.");
         }
 
-        var text = element.TryGetProperty(propertyName, out var value)
+        return element.TryGetProperty(propertyName, out var value)
             && value.ValueKind == JsonValueKind.String
                 ? value.GetString() ?? string.Empty
                 : string.Empty;
-
-        if (required && text.Length == 0)
-        {
-            throw new InvalidDataException(
-                $"The response contained an entry with no '{propertyName}' value.");
-        }
-
-        return text;
     }
 
     /// <summary>The name of the option <see cref="CreateBaseUrlOption"/> creates.</summary>
@@ -138,9 +131,21 @@ internal static class XboxPartnerCommandSupport
         }.AsContextValue(ContextEndpoint.XboxPartner);
         option.Validators.Add(result =>
         {
-            if (result.Tokens.Count > 0 && string.IsNullOrWhiteSpace(result.Tokens[0].Value))
+            if (result.Tokens.Count == 0)
+            {
+                return;
+            }
+
+            // Printable ASCII only, as the request header requires: commands also print the seller ID, so a
+            // control character would reach the terminal.
+            string sellerId = result.Tokens[0].Value.Trim();
+            if (sellerId.Length == 0)
             {
                 result.AddError("--seller-id must contain at least one non-whitespace character.");
+            }
+            else if (!sellerId.All(character => character is >= ' ' and <= '~'))
+            {
+                result.AddError("--seller-id must contain only printable ASCII characters.");
             }
         });
         return option;
@@ -337,12 +342,30 @@ internal static class XboxPartnerCommandSupport
         }
     }
 
-    public static int WriteLocalError(Exception exception)
+    /// <summary>
+    /// Writes a local or transport failure to stderr, after the correlation ID of a request that failed
+    /// without a readable response, or <paramref name="sentCorrelationId"/> when the failure carries none.
+    /// </summary>
+    public static int WriteLocalError(Exception exception, string? sentCorrelationId = null)
     {
         TelemetryRecorder.RecordError(exception);
+        WriteCorrelationId(exception, Console.Error, sentCorrelationId);
         Console.Error.WriteLine(TerminalText.MultiLine(exception.Message));
         return 1;
     }
+
+    /// <summary>
+    /// Writes the correlation ID of a request that failed without a readable response, or
+    /// <paramref name="sentCorrelationId"/> when <paramref name="exception"/> carries none and could
+    /// have reached the service.
+    /// </summary>
+    public static void WriteCorrelationId(Exception exception, TextWriter stderr, string? sentCorrelationId = null) =>
+        WriteCorrelationId(
+            XboxPartnerClient.TransportCorrelationId(exception) ?? Traceable(exception, sentCorrelationId), stderr);
+
+    // A request that failed name resolution or TLS never reached the service, so its ID can't be traced.
+    private static string? Traceable(Exception exception, string? sentCorrelationId) =>
+        XboxPartnerClient.NeverReachedService(exception) ? null : sentCorrelationId;
 
     /// <summary>
     /// Whether <paramref name="exception"/> is an expected gateway, authentication, or local
@@ -396,9 +419,11 @@ internal static class XboxPartnerCommandSupport
                 WriteCorrelationId(sentCorrelationId, stderr);
                 break;
             case OperationCanceledException:
+                WriteCorrelationId(exception, stderr, sentCorrelationId);
                 stderr.WriteLine("Request timed out.");
                 break;
             default:
+                WriteCorrelationId(exception, stderr, sentCorrelationId);
                 stderr.WriteLine($"Request failed: {TerminalText.SingleLine(exception.Message)}");
                 break;
         }
@@ -454,13 +479,12 @@ internal static class XboxPartnerCommandSupport
             case OperationCanceledException:
                 TelemetryRecorder.RecordError(cancellationToken.IsCancellationRequested
                     ? TelemetryErrorTypes.Cancelled : TelemetryErrorTypes.Transport);
-                WriteCorrelationId(sentCorrelationId, Console.Error);
+                WriteCorrelationId(exception, Console.Error, sentCorrelationId);
                 Console.Error.WriteLine(cancellationToken.IsCancellationRequested
                     ? "Request canceled." : "Request timed out.");
                 break;
             default:
-                WriteCorrelationId(sentCorrelationId, Console.Error);
-                WriteLocalError(exception);
+                WriteLocalError(exception, sentCorrelationId);
                 break;
         }
     }
@@ -510,13 +534,6 @@ internal static class XboxPartnerCommandSupport
     /// The shape of a seller <em>list</em> response, declared so table support is discoverable
     /// from metadata like every other command's.
     /// </summary>
-    /// <remarks>
-    /// Seller commands read their rows through <see cref="XboxPartnerTableFormatter"/> rather
-    /// than the shared reader, because they are gateway responses rather than PlayFab envelopes.
-    /// The layout is no longer separate: that formatter extracts the cells and hands them to
-    /// <c>TableFormatter.Render</c>, so this declaration and every other table are sized, padded,
-    /// and truncated by the same code.
-    /// </remarks>
     public static TableView SellerTableView { get; } = new(
         "sellers",
         [
@@ -573,8 +590,29 @@ internal static class XboxPartnerCommandSupport
     /// <summary>The view for <c>audience list</c>.</summary>
     public static TableView AudienceTableView { get; } = new("audiences", CreateAudienceColumns());
 
-    /// <summary>The one-row view for <c>audience get</c>. Members and tags are in JSON output only.</summary>
-    public static TableView AudienceRecordTableView { get; } = TableView.Record(CreateAudienceColumns());
+    /// <summary>
+    /// The view for <c>audience get</c>, <c>create</c>, and <c>update</c>: a row per member returned,
+    /// each with the audience's fields and the number of members returned. An audience with no
+    /// members has one row.
+    /// </summary>
+    public static TableView AudienceDetailTableView { get; } = TableView.Record(
+        [
+            .. CreateAudienceColumns(),
+            new CommandLine.TableColumn(
+                "MEMBERS",
+                AudienceMembers,
+                7,
+                Transform: members => members.ValueKind == JsonValueKind.Array
+                    ? members.GetArrayLength().ToString(CultureInfo.InvariantCulture)
+                    : "-")
+            {
+                ReadsWholeList = true,
+            },
+            // 254 is the longest email address, so a member is shown whole.
+            new CommandLine.TableColumn("MEMBER", AudienceMembers, 254),
+        ]) with { Expand = AudienceMembers };
+
+    private static string AudienceMembers => JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxPartnerAudience.Members));
 
     private static IReadOnlyList<CommandLine.TableColumn> CreateAudienceColumns() =>
         [
@@ -592,59 +630,81 @@ internal static class XboxPartnerCommandSupport
                 12),
         ];
 
+    /// <summary><c>config list</c>: one row per configuration set.</summary>
     public static TableView ConfigurationTableView { get; } = new(
         "configurations",
-        CreateConfigurationColumns());
-
-    /// <summary>
-    /// <c>config status</c>: the configuration columns, then the status of the sandbox's last
-    /// publish, read from <c>lastPublish</c>.
-    /// </summary>
-    public static TableView ConfigurationStatusTableView { get; } = TableView.Record(
         [
-            .. CreateConfigurationColumns(),
             new CommandLine.TableColumn(
-                "PUBLISH STATUS",
-                ConfigurationStatusLastPublish + ".status",
-                16),
-        ]);
-
-    /// <summary>The <c>config status</c> JSON property holding the last publish's status.</summary>
-    public const string ConfigurationStatusLastPublish = "lastPublish";
-
-    private static IReadOnlyList<CommandLine.TableColumn> CreateConfigurationColumns() =>
-        [
+                "SCOPE",
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveConfigurationSetStatus.Scope)),
+                7),
             new CommandLine.TableColumn(
                 "SANDBOX",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.Sandbox)),
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveConfigurationSetStatus.Sandbox)),
                 24),
             new CommandLine.TableColumn(
-                "WORKING",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.WorkingVersion)),
-                12),
+                "CHANGES",
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveConfigurationSetStatus.HasChanges)),
+                7),
             new CommandLine.TableColumn(
-                "WORKING COMMIT",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.WorkingCommitTime)),
-                22),
+                "DRAFT",
+                FieldPath(nameof(XboxLiveConfigurationSetStatus.Draft), nameof(XboxLiveConfigurationVersion.Version)),
+                12),
             new CommandLine.TableColumn(
                 "PUBLISHED",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.PublishedVersion)),
+                FieldPath(nameof(XboxLiveConfigurationSetStatus.Published), nameof(XboxLiveConfigurationVersion.Version)),
                 12),
             new CommandLine.TableColumn(
-                "PUBLISHED COMMIT",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.PublishedCommitTime)),
+                "PUBLISHED AT",
+                FieldPath(nameof(XboxLiveConfigurationSetStatus.Published), nameof(XboxLiveConfigurationVersion.Time)),
                 22),
             new CommandLine.TableColumn(
-                "UNPUBLISHED",
-                JsonNamingPolicy.CamelCase.ConvertName(
-                    nameof(XboxLiveConfigurationSummary.HasUnpublishedChanges)),
-                11),
-        ];
+                "LAST PUBLISH",
+                FieldPath(nameof(XboxLiveConfigurationSetStatus.LastPublish), nameof(XboxLiveLastPublish.Status)),
+                12),
+        ]);
+
+    /// <summary>
+    /// <c>config status</c>: one row per change in a document's <c>changes</c>, or one row for a
+    /// document without any. <c>XboxPartnerTableFormatter.FormatConfigurationStatus</c> passes it
+    /// only the documents that differ.
+    /// </summary>
+    public static TableView ConfigurationStatusTableView { get; } = new(
+        JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveConfigurationStatus.Documents)),
+        [
+            new CommandLine.TableColumn(
+                "SCOPE",
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveDocumentStatus.Scope)),
+                7),
+            new CommandLine.TableColumn(
+                "FEATURE",
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveDocumentStatus.Feature)),
+                32),
+            new CommandLine.TableColumn(
+                "STATE",
+                JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveDocumentStatus.State)),
+                12,
+                Transform: state => state.GetString() switch
+                {
+                    XboxLiveDocumentStates.DraftOnly => "added",
+                    XboxLiveDocumentStates.PublishedOnly => "not in draft",
+                    var other => other ?? "-",
+                }),
+            new CommandLine.TableColumn(
+                "CHANGE",
+                FieldPath(nameof(XboxLiveDocumentStatus.Changes), nameof(XboxLiveDocumentChange.Description)),
+                60),
+            new CommandLine.TableColumn(
+                "SAVED BY",
+                FieldPath(nameof(XboxLiveDocumentStatus.Changes), nameof(XboxLiveDocumentChange.Author), nameof(XboxLiveAuthor.Name)),
+                24),
+        ])
+    {
+        Expand = JsonNamingPolicy.CamelCase.ConvertName(nameof(XboxLiveDocumentStatus.Changes)),
+    };
+
+    private static string FieldPath(params string[] names) =>
+        string.Join('.', names.Select(JsonNamingPolicy.CamelCase.ConvertName));
 
     /// <summary>
     /// A shared view for schema discovery, downloads, and saved-file summaries.
@@ -671,7 +731,7 @@ internal static class XboxPartnerCommandSupport
     /// <summary>The one-row summary produced after extracting a document archive.</summary>
     public static TableView DocumentDownloadTableView { get; } = TableView.Record(
         [
-            new CommandLine.TableColumn("TYPE", "type", 10),
+            new CommandLine.TableColumn("SCOPE", "scope", 10),
             new CommandLine.TableColumn("SANDBOX", "sandbox", 24),
             new CommandLine.TableColumn("VIEW", "view", 12),
             new CommandLine.TableColumn("VERSION", "version", 12),
@@ -681,7 +741,7 @@ internal static class XboxPartnerCommandSupport
 
     public static TableView DocumentCommitTableView { get; } = TableView.Record(
         [
-            new CommandLine.TableColumn("TYPE", "type", 10),
+            new CommandLine.TableColumn("SCOPE", "scope", 10),
             new CommandLine.TableColumn("SANDBOX", "sandbox", 24),
             new CommandLine.TableColumn("VALIDATE ONLY", "validateOnly", 13),
             new CommandLine.TableColumn("CAN COMMIT", "canCommit", 10),
@@ -837,11 +897,11 @@ internal static class XboxPartnerCommandSupport
     internal static IReadOnlyList<TableField<TestAccountLookupResult>> TestAccountLookupFields { get; } =
     [
         new(
-            new("EMAIL", $"{Camel(nameof(TestAccountLookupResult.Account))}.{Camel(nameof(TestAccount.Email))}", 60),
-            result => TestAccountText(result.Account.Email)),
-        new(
             new("GAMERTAG", $"{Camel(nameof(TestAccountLookupResult.Account))}.{Camel(nameof(TestAccount.Gamertag))}", 20),
             result => TestAccountText(result.Account.Gamertag)),
+        new(
+            new("XUID", $"{Camel(nameof(TestAccountLookupResult.Account))}.{Camel(nameof(TestAccount.Xuid))}", 20),
+            result => TestAccountText(result.Account.Xuid)),
         new(
             new("BATCH ID", $"{Camel(nameof(TestAccountLookupResult.Batch))}.{Camel(nameof(TestAccountBatch.Id))}", 20),
             result => result.Batch.Id.ToString(CultureInfo.InvariantCulture)),

@@ -41,9 +41,21 @@ internal static class PackageCommandFactory
         new("VERSION", Camel(nameof(XboxPartnerPackage.Version)), 16),
         new("PLATFORM", Camel(nameof(XboxPartnerPackage.Platform)), 12),
         new("STATE", Camel(nameof(XboxPartnerPackage.ProcessingState)), 14),
+        new("ERRORS", Camel(nameof(XboxPartnerPackage.ValidationItems)), 6, Transform: CountErrors),
         new("PLAYTEST", Camel(nameof(XboxPartnerPackage.IsAvailableForPlaytest)), 8),
         new("CREATED", Camel(nameof(XboxPartnerPackage.CreatedAt)), 22),
     ];
+
+    /// <summary>The number of validation items with severity Error.</summary>
+    private static string CountErrors(JsonElement items) =>
+        items.ValueKind == JsonValueKind.Array
+            ? items.EnumerateArray()
+                .Count(item => item.TryGetProperty("severity", out var severity) && severity.GetString() == "Error")
+                .ToString(CultureInfo.InvariantCulture)
+            : "-";
+
+    private const string ErrorsColumnHelp =
+        "ERRORS counts the validationItems with severity Error.";
 
     internal static TableView PackageListTableView { get; } = new(XboxPartnerPackage.Collection, PackageColumns);
 
@@ -95,7 +107,8 @@ internal static class PackageCommandFactory
                 "--seller-id, XBOX_SELLER_ID, or 'context set', or your only seller.",
             Output: "A JSON object with the Main branch's packageSetId and a packages array holding every package with every field the service returns, " +
                 "including id, version, platform, processingState, isAvailableForPlaytest, and validationItems. " +
-                "Table output has PACKAGE ID, VERSION, PLATFORM, STATE, PLAYTEST, and CREATED columns.",
+                "Table output has PACKAGE ID, VERSION, PLATFORM, STATE, ERRORS, PLAYTEST, and CREATED columns. " +
+                ErrorsColumnHelp,
             Examples:
             [
                 "xbox package list --store-id 9N0000000000",
@@ -105,7 +118,8 @@ internal static class PackageCommandFactory
             LearnMore:
             [
                 "A package is ready for a playtest when processingState is Processed, validationItems contains no item with severity Error, " +
-                "and isAvailableForPlaytest is true. Table output doesn't show validationItems.",
+                "and isAvailableForPlaytest is true. In table output, that's STATE Processed, ERRORS 0, and PLAYTEST true. " +
+                "To read the validation messages, use JSON output.",
             ],
             Table: PackageListTableView));
     }
@@ -147,7 +161,7 @@ internal static class PackageCommandFactory
             Scope: "One package of the game chosen by --store-id or --xbox-title-id, for the seller selected by " +
                 "--seller-id, XBOX_SELLER_ID, or 'context set', or your only seller.",
             Output: "The package as a JSON object with every field the service returns. Table output has one row " +
-                "with PACKAGE ID, VERSION, PLATFORM, STATE, PLAYTEST, and CREATED columns.",
+                "with PACKAGE ID, VERSION, PLATFORM, STATE, ERRORS, PLAYTEST, and CREATED columns. " + ErrorsColumnHelp,
             Examples:
             [
                 "xbox package get 11111111-2222-3333-4444-555555555555 --store-id 9N0000000000",
@@ -184,7 +198,7 @@ internal static class PackageCommandFactory
             using var client = clientFactory is null
                 ? new XboxPartnerClient(configuration, authenticationService: Program.GetAuthentication(result))
                 : clientFactory(configuration);
-            long? sellerId = await sellerOption.GetSellerIdAsync(result, configuration, client, baseUrl, cancellationToken);
+            long? sellerId = sellerOption.GetSellerId(result);
             return await action(client, baseUrl, sellerId);
         }
         // Only the service's failures and a request timeout, which cancels without the caller, are reported

@@ -221,6 +221,7 @@ internal sealed record XboxPartnerPackage(
     [property: JsonPropertyName("platform")] string? Platform,
     [property: JsonPropertyName("processingState")] string? ProcessingState,
     [property: JsonPropertyName("isAvailableForPlaytest")] bool? IsAvailableForPlaytest,
+    [property: JsonPropertyName("validationItems")] JsonElement? ValidationItems,
     [property: JsonPropertyName("createdAt")] string? CreatedAt)
 {
     /// <summary>The list output's array.</summary>

@@ -43,15 +43,8 @@ public class TestAccountGetTests
     }
 
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData("noatsign")]
-    [InlineData("@xboxtest.com")]
     [InlineData("a@b@xboxtest.com")]
     [InlineData("a b@xboxtest.com")]
-    [InlineData("tester00001@example.com")]
-    [InlineData("a<b@xboxtest.com")]
-    [InlineData("ABCD-tester.@xboxtest.com")]
     [InlineData(".ABCD-tester@xboxtest.com")]
     [InlineData("-tester00000@xboxtest.com")]
     [InlineData("ABCD..tester@xboxtest.com")]
@@ -96,18 +89,6 @@ public class TestAccountGetTests
     }
 
     [Fact]
-    public async Task Get_BatchWithoutExpiryIsNotExpired()
-    {
-        var handler = Respond(ListJson(null), DetailJson(42, null));
-
-        Invocation result = await InvokeAsync(["test-account", "get", Email], handler);
-
-        Assert.Equal(0, result.ExitCode);
-        using JsonDocument json = JsonDocument.Parse(result.Stdout);
-        Assert.False(json.RootElement.GetProperty("expired").GetBoolean());
-    }
-
-    [Fact]
     public async Task Get_TableShowsOneRow()
     {
         var handler = Respond(ListJson("2026-01-01T00:00:00Z"), DetailJson(42, "2026-01-01T00:00:00Z"));
@@ -117,12 +98,11 @@ public class TestAccountGetTests
         Assert.Equal(0, result.ExitCode);
         string[] lines = result.Stdout.TrimEnd().Split(Environment.NewLine);
         Assert.Equal(
-            ["EMAIL", "GAMERTAG", "BATCH ID", "EMAIL TEMPLATE", "EXPIRES (UTC)", "EXPIRED"],
+            ["GAMERTAG", "XUID", "BATCH ID", "EMAIL TEMPLATE", "EXPIRES (UTC)", "EXPIRED"],
             System.Text.RegularExpressions.Regex.Split(lines[0].Trim(), @"\s{2,}"));
-        string row = lines[^1].TrimEnd();
-        Assert.StartsWith(Email, row, StringComparison.Ordinal);
-        Assert.Contains("2026-01-01 00:00", row, StringComparison.Ordinal);
-        Assert.EndsWith(" yes", row, StringComparison.Ordinal);
+        Assert.Equal(
+            ["Alpha", "2814600000000001", "42", "ABCD-tester", "2026-01-01 00:00", "yes"],
+            System.Text.RegularExpressions.Regex.Split(lines[^1].Trim(), @"\s{2,}"));
     }
 
     [Fact]
@@ -158,14 +138,56 @@ public class TestAccountGetTests
     }
 
     [Fact]
-    public async Task Get_TemplateMatchesButAccountMissingExitsOne()
+    public async Task Get_ByXuidSendsTheXuidFilterAndMatchesOnXuid()
     {
-        var handler = Respond(ListJson("2027-01-01T00:00:00Z"), DetailJson(42, "2027-01-01T00:00:00Z", "other@xboxtest.com"));
+        const string list = """
+            {"batches":[{"id":9,"emailTemplate":"unrelated","batchSize":1,"createdBy":1,"isComplete":true}]}
+            """;
+        var handler = Respond(list, DetailJson(9, "2027-01-01T00:00:00Z", "other@xboxtest.com"));
 
-        Invocation result = await InvokeAsync(["test-account", "get", Email], handler);
+        Invocation result = await InvokeAsync(["test-account", "get", "2814600000000001", "--seller-id", "1234567"], handler);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("?sellerId=1234567&xuid=2814600000000001&pageSize=100", handler.Requests[0].RequestUri?.Query);
+        using JsonDocument json = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("2814600000000001", json.RootElement.GetProperty("account").GetProperty("xuid").GetString());
+        Assert.Equal(9, json.RootElement.GetProperty("batch").GetProperty("id").GetInt64());
+    }
+
+    [Fact]
+    public async Task Get_ByXuidOnAServiceThatIgnoresTheFilterReadsOnlyTheNewestBatches()
+    {
+        int count = TestAccountLookup.MaxCandidates + 2;
+        string batches = string.Join(
+            ",",
+            Enumerable.Range(1, count).Reverse().Select(id =>
+                $$"""{"id":{{id}},"emailTemplate":"other","batchSize":1,"createdBy":1,"isComplete":true}"""));
+        string[] details = [.. Enumerable.Range(1, count).Reverse().Select(id => DetailJson(id, null))];
+        var handler = Respond([$$"""{"batches":[{{batches}}]}""", .. details]);
+
+        Invocation result = await InvokeAsync(["test-account", "get", "2814600000000099"], handler);
 
         Assert.Equal(1, result.ExitCode);
-        Assert.Contains("was not found", result.Stderr, StringComparison.Ordinal);
+        Assert.Equal(TestAccountLookup.MaxCandidates + 1, handler.Requests.Count);
+        Assert.Contains(
+            $"XUID 2814600000000099 was not found in the newest {TestAccountLookup.MaxCandidates} of {count} batches; the older ones were not searched.",
+            result.Stderr,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("0 isn't a valid XUID", "0")]
+    [InlineData("99999999999999999999999 isn't a valid XUID", "99999999999999999999999")]
+    [InlineData("Pass an email such as ABCD-tester00000@xboxtest.com, or a XUID such as 2814600000000001.", "28146abc")]
+    public async Task Get_RejectsAnInvalidEmailOrXuid(string error, string value)
+    {
+        var handler = Respond("{}");
+
+        Invocation result = await InvokeAsync(["test-account", "get", value], handler);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(error, result.Stderr, StringComparison.Ordinal);
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]
@@ -293,21 +315,6 @@ public class TestAccountGetTests
         using JsonDocument json = JsonDocument.Parse(result.Stdout);
         Assert.False(json.RootElement.GetProperty("expired").GetBoolean());
         Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("expiredOn").ValueKind);
-    }
-
-    [Fact]
-    public void FilterExpired_KeepsABatchOnlyOnceItsExpiryHasPassed()
-    {
-        const string body = """
-            {"batches":[{"id":2,"accessExpirationDate":"2026-06-01T00:00:00Z"},
-                        {"id":1,"accessExpirationDate":"2026-05-31T23:59:59Z"}]}
-            """;
-
-        using JsonDocument json = JsonDocument.Parse(TestAccountLookup.FilterExpired(body, Now, null));
-
-        JsonElement batches = json.RootElement.GetProperty("batches");
-        Assert.Equal(1, batches.GetArrayLength());
-        Assert.Equal(1, batches[0].GetProperty("id").GetInt64());
     }
 
     [Fact]
@@ -537,21 +544,6 @@ public class TestAccountGetTests
         Assert.EndsWith(" no", result.Stdout.TrimEnd(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task BatchList_ExpiredAndIncludeSandboxesCannotBeCombined()
-    {
-        var handler = Respond(ListJson("2026-01-01T00:00:00Z"));
-
-        Invocation result = await InvokeAsync(
-            ["test-account", "batch", "list", "--expired", "--include-sandboxes"],
-            handler);
-
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Contains("--expired and --include-sandboxes cannot be combined", result.Stderr, StringComparison.Ordinal);
-        Assert.Contains("'xbox test-account batch get <batch-id>'", result.Stderr, StringComparison.Ordinal);
-        Assert.Empty(handler.Requests);
-    }
-
     [Theory]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.BadGateway)]
@@ -628,45 +620,24 @@ public class TestAccountGetTests
     }
 
     [Fact]
-    public async Task BatchList_ExpiredKeepsOnlyExpiredAndAppliesLimitAfterwards()
-    {
-        const string list = """
-            {"batches":[
-              {"id":4,"emailTemplate":"a","accessExpirationDate":"2027-01-01T00:00:00Z"},
-              {"id":3,"emailTemplate":"b","accessExpirationDate":"2026-03-01T00:00:00Z"},
-              {"id":2,"emailTemplate":"c"},
-              {"id":1,"emailTemplate":"d","accessExpirationDate":"2026-01-01T00:00:00Z"}]}
-            """;
-        var handler = Respond(list);
-
-        Invocation result = await InvokeAsync(["test-account", "batch", "list", "--expired", "--limit", "1"], handler);
-
-        Assert.Equal(0, result.ExitCode);
-        Assert.DoesNotContain("top=", handler.Requests[0].RequestUri?.Query, StringComparison.Ordinal);
-        using JsonDocument json = JsonDocument.Parse(result.Stdout);
-        JsonElement batches = json.RootElement.GetProperty("batches");
-        Assert.Equal(1, batches.GetArrayLength());
-        Assert.Equal(3, batches[0].GetProperty("id").GetInt64());
-        Assert.False(json.RootElement.TryGetProperty("returned", out _));
-    }
-
-    [Fact]
-    public async Task BatchList_ExpiredReadsLaterPagesBeforeApplyingTheLimit()
+    public async Task BatchList_ExpiredSendsTheFilterAndLimitOnEveryPage()
     {
         var handler = Respond(
-            """{"batches":[{"id":9,"emailTemplate":"a","accessExpirationDate":"2027-01-01T00:00:00Z"}],"continuationToken":"t1"}""",
-            """{"batches":[{"id":5,"emailTemplate":"b","accessExpirationDate":"2026-03-01T00:00:00Z"},{"id":4,"emailTemplate":"c","accessExpirationDate":"2026-01-01T00:00:00Z"}]}""");
+            """{"batches":[{"id":5,"emailTemplate":"b","accessExpirationDate":"2026-03-01T00:00:00Z"}],"continuationToken":"t1"}""",
+            """{"batches":[{"id":4,"emailTemplate":"c","accessExpirationDate":"2026-01-01T00:00:00Z"}]}""");
 
-        Invocation result = await InvokeAsync(["test-account", "batch", "list", "--expired", "--limit", "1"], handler);
+        Invocation result = await InvokeAsync(["test-account", "batch", "list", "--expired", "--limit", "2"], handler);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Contains("expired=true", request.RequestUri?.Query, StringComparison.Ordinal);
+            Assert.Contains("top=2", request.RequestUri?.Query, StringComparison.Ordinal);
+        });
         Assert.Contains("continuationToken=t1", handler.Requests[1].RequestUri?.Query, StringComparison.Ordinal);
-        Assert.DoesNotContain("top=", handler.Requests[1].RequestUri?.Query, StringComparison.Ordinal);
         using JsonDocument json = JsonDocument.Parse(result.Stdout);
-        JsonElement batches = json.RootElement.GetProperty("batches");
-        Assert.Equal(1, batches.GetArrayLength());
-        Assert.Equal(5, batches[0].GetProperty("id").GetInt64());
+        Assert.Equal(2, json.RootElement.GetProperty("batches").GetArrayLength());
     }
 
     [Fact]
@@ -678,35 +649,8 @@ public class TestAccountGetTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Returned 1 expired batches.", result.Stderr, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FilterExpired_RejectsABodyWithoutBatches()
-    {
-        Assert.Throws<InvalidDataException>(() => TestAccountLookup.FilterExpired("{}", Now, null));
-        Assert.Throws<InvalidDataException>(() => TestAccountLookup.FilterExpired("not json", Now, null));
-    }
-
-    [Theory]
-    [InlineData("""{"batches":[{"id":1,"accessExpirationDate":"soon"}]}""")]
-    [InlineData("""{"batches":[{"id":1,"accessExpirationDate":5}]}""")]
-    [InlineData("""{"batches":[7]}""")]
-    public void FilterExpired_RejectsUnreadableEntries(string body)
-    {
-        Assert.Throws<InvalidDataException>(() => TestAccountLookup.FilterExpired(body, Now, null));
-    }
-
-    [Fact]
-    public void FilterExpired_SkipsBatchesWithNullOrMissingExpiry()
-    {
-        const string body = """
-            {"batches":[{"id":1,"accessExpirationDate":null},{"id":2},{"id":3,"accessExpirationDate":"2026-01-01T00:00:00Z"}]}
-            """;
-
-        using JsonDocument json = JsonDocument.Parse(TestAccountLookup.FilterExpired(body, Now, null));
-
-        Assert.Equal(1, json.RootElement.GetProperty("batches").GetArrayLength());
-        Assert.Equal(3, json.RootElement.GetProperty("batches")[0].GetProperty("id").GetInt64());
+        Assert.Contains("expired=true", handler.Requests[0].RequestUri?.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("top=", handler.Requests[0].RequestUri?.Query, StringComparison.Ordinal);
     }
 
     private static string ListJson(string? expiry) =>

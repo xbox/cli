@@ -18,9 +18,9 @@ namespace XboxDevCLI.CommandLine;
 /// </summary>
 /// <remarks>
 /// Context reparsing gives the reparsed invocation a <see cref="ForResolved">copy</see> that shares
-/// the captured inputs, the loaded configuration, the notes and warnings already written, and the
-/// sign-in service, so the command acts as the account that read its saved values and each note
-/// is written once.
+/// the captured inputs, the loaded configuration, the warnings already written, and the sign-in
+/// service, so the command acts as the account that read its saved values and each warning is
+/// written once.
 /// </remarks>
 internal sealed class CommandInvocation
 {
@@ -30,16 +30,14 @@ internal sealed class CommandInvocation
     private AuthenticationService? _authentication;
 
     /// <summary>
-    /// Captures the authentication inputs and loads the configuration
-    /// <paramref name="layerConfiguration"/> builds, looking for a retired settings file in
-    /// <paramref name="installDirectory"/>, by default the executable's. Neither validates,
-    /// writes, or throws for invalid settings.
+    /// Captures the authentication inputs and keeps <paramref name="configuration"/>. Neither
+    /// validates, writes, or throws for invalid settings.
     /// </summary>
-    internal CommandInvocation(ParseResult parseResult, Func<IConfiguration> layerConfiguration, string? installDirectory = null)
+    internal CommandInvocation(ParseResult parseResult, IConfiguration configuration)
         : this(
             parseResult,
             AutomationAuthenticationSettings.CaptureEnvironment(),
-            LoadedConfiguration.Load(layerConfiguration, installDirectory),
+            LoadedConfiguration.Load(configuration),
             new Written())
     {
     }
@@ -60,8 +58,8 @@ internal sealed class CommandInvocation
     internal AutomationAuthenticationSettings.EnvironmentSnapshot AuthenticationEnvironment { get; }
 
     /// <summary>
-    /// The configuration, loaded once when the invocation began, with its error and warnings.
-    /// Telemetry reads its settings from it when it loaded; commands use <see cref="Configuration"/>.
+    /// The configuration, loaded once when the invocation began, with its warnings. Telemetry
+    /// reads its settings from it; commands use <see cref="Configuration"/>.
     /// </summary>
     internal LoadedConfiguration LoadedConfiguration { get; }
 
@@ -77,30 +75,20 @@ internal sealed class CommandInvocation
 
     /// <summary>The prepared configuration.</summary>
     internal IConfiguration Configuration =>
-        _configurationPrepared ? LoadedConfiguration.Configuration! : throw NotPrepared(nameof(Configuration));
+        _configurationPrepared ? LoadedConfiguration.Configuration : throw NotPrepared(nameof(Configuration));
 
     /// <summary>The prepared sign-in service for the selected mode.</summary>
     internal AuthenticationService Authentication =>
         _authentication ?? throw NotPrepared(nameof(Authentication));
 
     /// <summary>
-    /// The loaded configuration, or the error loading it, for a caller that tests the layering
-    /// itself. Commands use <see cref="Configuration"/>, after <see cref="Prepare"/>.
+    /// Prepares what <paramref name="requirement"/> needs. The sign-in service validates its own
+    /// inputs: it checks its settings and credential files, refusing options that don't apply to
+    /// the selected mode. Then the warning for each of <paramref name="endpoints"/> that's been
+    /// changed is written to stderr, once per invocation. Nothing reads the token cache, acquires a
+    /// token, or changes anything. Running it again does nothing more.
     /// </summary>
-    internal IConfiguration LoadConfiguration() => LoadedConfiguration.GetOrThrow();
-
-    /// <summary>
-    /// Prepares what <paramref name="requirement"/> needs. Each component validates its own
-    /// inputs: the configuration must have loaded, and the sign-in service checks its settings and
-    /// credential files, refusing options that don't apply to the selected mode. Then the note
-    /// about a retired settings file, and the warning for each of <paramref name="endpoints"/>
-    /// that's been changed, are written to stderr, once per invocation. Nothing reads the token
-    /// cache, acquires a token, or changes anything. Running it again does nothing more.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// The built-in settings are missing, or the sign-in settings aren't valid.
-    /// </exception>
-    /// <exception cref="InvalidDataException">The built-in settings aren't valid JSON.</exception>
+    /// <exception cref="InvalidOperationException">The sign-in settings aren't valid.</exception>
     internal void Prepare(CommandRequirement requirement, ServiceEndpoints endpoints)
     {
         if (requirement == CommandRequirement.None)
@@ -108,9 +96,7 @@ internal sealed class CommandInvocation
             return;
         }
 
-        var configuration = LoadedConfiguration.GetOrThrow();
         _configurationPrepared = true;
-        WriteRetiredSettingsNotice();
         WriteEndpointWarnings(endpoints);
 
         if (requirement == CommandRequirement.Authentication && _authentication is null)
@@ -119,14 +105,13 @@ internal sealed class CommandInvocation
             ContextResolver.RefuseProfileInAutomation(
                 _parseResult,
                 ContextProfiles.Normalize(_parseResult.GetValue(ContextProfiles.Option)));
-            _authentication = AuthenticationService.Create(configuration, AuthenticationEnvironment);
+            _authentication = AuthenticationService.Create(LoadedConfiguration.Configuration, AuthenticationEnvironment);
         }
     }
 
     /// <summary>Makes <paramref name="authentication"/> the prepared sign-in service, for tests.</summary>
     internal void UseAuthentication(AuthenticationService authentication)
     {
-        _ = LoadedConfiguration.GetOrThrow();
         _configurationPrepared = true;
         _authentication = authentication;
     }
@@ -150,30 +135,6 @@ internal sealed class CommandInvocation
             _configurationPrepared = _configurationPrepared,
             _authentication = _authentication,
         };
-
-    /// <summary>
-    /// Writes the note about a settings file an earlier release read, once per invocation, so a
-    /// user who changed a setting there learns it no longer applies. It isn't written with
-    /// <c>--output json</c> or <c>json-compact</c>, where a command such as <c>auth status</c>
-    /// writes its errors to stderr as JSON, which a line of text before them would break.
-    /// </summary>
-    private void WriteRetiredSettingsNotice()
-    {
-        if (LoadedConfiguration.RetiredSettingsNotice is not { } notice
-            || _written.RetiredSettingsNotice
-            || IsJsonOutput())
-        {
-            return;
-        }
-
-        _written.RetiredSettingsNotice = true;
-        Console.Error.WriteLine(notice);
-    }
-
-    private bool IsJsonOutput() =>
-        _parseResult.GetResult(Program.OutputOption) is not null
-        && _parseResult.GetValue(Program.OutputOption) is { } format
-        && format.StartsWith("json", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Writes the warning for each of <paramref name="endpoints"/> that's been changed and isn't
@@ -242,7 +203,5 @@ internal sealed class CommandInvocation
     private sealed class Written
     {
         internal ServiceEndpoints Endpoints { get; set; } = ServiceEndpoints.None;
-
-        internal bool RetiredSettingsNotice { get; set; }
     }
 }

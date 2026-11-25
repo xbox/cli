@@ -1,9 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using XboxDevCLI.Commands;
 
 namespace XboxDevCLI.Services;
 
@@ -336,26 +338,132 @@ internal sealed partial class XboxPartnerClient
         return "[" + string.Join(',', configurations) + "]";
     }
 
-    public async Task<string> GetXboxLiveConfigurationAsync(
+    /// <summary>
+    /// Reads how each document's draft compares with what's published in one configuration scope:
+    /// a sandbox (<paramref name="sandbox"/> and one of <paramref name="scid"/> or
+    /// <paramref name="titleId"/>), the title (one of those two only), or the seller account
+    /// (none). <paramref name="targetResolved"/> learns the SCID the service used.
+    /// </summary>
+    public async Task<string> GetXboxLiveConfigurationStatusAsync(
         long? sellerId,
+        XboxLiveScope scope,
         Guid? scid,
-        string sandbox,
+        string? sandbox,
         CancellationToken cancellationToken,
         string? titleId = null,
         Action<XboxLiveResolvedConfigurationTarget>? targetResolved = null)
     {
         ValidateSellerId(sellerId);
-        ValidateConfigurationTarget(scid, titleId);
-        string validatedSandbox = ValidateSandbox(sandbox, nameof(sandbox));
+        if (scope == XboxLiveScope.Account)
+        {
+            scid = null;
+            titleId = null;
+        }
+        else
+        {
+            ValidateConfigurationTarget(scid, titleId);
+        }
+
+        string? validatedSandbox = scope == XboxLiveScope.Sandbox
+            ? ValidateSandbox(sandbox!, nameof(sandbox))
+            : null;
         return (await SendConfigurationOperationAsync(
             "xboxpartner/v1/xboxlive/configurations/get",
-            JsonContent.Create(new XboxLiveConfigurationRequest(
+            JsonContent.Create(new XboxLiveConfigurationStatusRequest(
+                sellerId,
+                scid,
+                titleId,
+                validatedSandbox,
+                XboxLiveConfigurationScopes.Name(scope))),
+            sellerId,
+            scid,
+            titleId,
+            // Checked here, so a response that can't be read is reported with its correlation ID.
+            static body =>
+            {
+                XboxPartnerCommandSupport.DeserializeResponse<XboxLiveConfigurationGetResponse>(body, "configuration status")
+                    .RequireNamedDocuments();
+                return body;
+            },
+            cancellationToken,
+            targetResolved)
+            .ConfigureAwait(false)).Body;
+    }
+
+    /// <summary>Reads the newest page of a sandbox's saves, publishes, and copies, with their descriptions.</summary>
+    public async Task<string> GetXboxLiveConfigurationHistoryAsync(
+        long? sellerId,
+        Guid scid,
+        string sandbox,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        ValidateSellerId(sellerId);
+        ValidateRequiredGuid(scid, nameof(scid));
+        string validatedSandbox = ValidateSandbox(sandbox, nameof(sandbox));
+        return await SendAsync(
+            HttpMethod.Post,
+            "xboxpartner/v1/xboxlive/configurations/history",
+            JsonContent.Create(new XboxLiveConfigurationHistoryRequest(
                 sellerId,
                 scid,
                 validatedSandbox,
-                titleId)),
-            sellerId, scid, titleId, static body => body, cancellationToken, targetResolved)
-            .ConfigureAwait(false)).Body;
+                pageSize)),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads a sandbox's saves, publishes, and copies a page at a time, newest first, with one
+    /// correlation ID. <paramref name="readEntry"/> sees each entry as its page arrives, and
+    /// <paramref name="stop"/> ends the listing after any page for which it returns true.
+    /// </summary>
+    public async Task GetXboxLiveConfigurationHistoryEntriesAsync(
+        long? sellerId,
+        Guid scid,
+        string sandbox,
+        int pageSize,
+        Action<XboxLiveHistoryEntry> readEntry,
+        CancellationToken cancellationToken,
+        Action<int>? pageRead = null,
+        Func<bool>? stop = null)
+    {
+        ValidateSellerId(sellerId);
+        ValidateRequiredGuid(scid, nameof(scid));
+        string validatedSandbox = ValidateSandbox(sandbox, nameof(sandbox));
+        await ReadEveryPageAsync(
+            "entries",
+            "configuration history",
+            token => (
+                HttpMethod.Post,
+                "xboxpartner/v1/xboxlive/configurations/history",
+                JsonContent.Create(new XboxLiveConfigurationHistoryRequest(
+                    sellerId,
+                    scid,
+                    validatedSandbox,
+                    // The service takes a page size or a continuation token, not both.
+                    token is null ? pageSize : null,
+                    token))),
+            cancellationToken,
+            readItem: item => readEntry(ParseHistoryEntry(item)),
+            pageRead: pageRead,
+            stop: stop).ConfigureAwait(false);
+    }
+
+    private static XboxLiveHistoryEntry ParseHistoryEntry(string item)
+    {
+        XboxLiveHistoryEntry? entry;
+        try
+        {
+            entry = JsonSerializer.Deserialize<XboxLiveHistoryEntry>(item);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException("The configuration history response was not valid JSON.", ex);
+        }
+
+        return entry is null || (entry.Documents?.Any(document => document is null) ?? false)
+            ? throw new InvalidDataException("The configuration history response must contain an entries array of objects.")
+            : entry;
     }
 
     public async Task<string> GetSchemaTypesAsync(CancellationToken cancellationToken) =>
@@ -420,12 +528,12 @@ internal sealed partial class XboxPartnerClient
         var target = request.Scid.HasValue || request.TitleId is not null
             ? ReadConfigurationTarget(response, sellerId, request.Scid, request.TitleId, correlationId)
             : null;
-        using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-        byte[] content = await ReadResponseBytesWithLimitAsync(
-            response.Content,
+        byte[] content = await ReadResponseBytesAsync(
+            response,
+            correlationId,
             _maxDocumentArchiveBytes,
             "XboxPartner:MaxDocumentArchiveBytes",
-            bodyTimeout.Token).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
         string? eTag = response.Headers.ETag?.ToString();
         string? versionValue = response.Headers.TryGetValues("X-Version", out var versions)
             ? versions.FirstOrDefault()
@@ -512,6 +620,34 @@ internal sealed partial class XboxPartnerClient
             sellerId, request.Scid, request.TitleId, ParsePublishResponse, cancellationToken, targetResolved,
             onSending)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Publishes the seller account's latest working configuration, or with <paramref name="validateOnly"/> only
+    /// validates it.
+    /// </summary>
+    internal async Task<XboxPartnerOperationResult<XboxLiveAccountPublishResponse>> PublishXboxLiveAccountConfigurationAsync(
+        long? sellerId,
+        bool validateOnly,
+        CancellationToken cancellationToken,
+        Action<string>? onSending = null)
+    {
+        ValidateSellerId(sellerId);
+        return await SendConfigurationOperationAsync(
+            "xboxpartner/v1/xboxlive/account/publish",
+            JsonContent.Create(new XboxLiveAccountPublishApiRequest(sellerId, validateOnly)),
+            sellerId, scid: null, titleId: null, ParseAccountPublishResponse, cancellationToken,
+            targetResolved: null, onSending)
+            .ConfigureAwait(false);
+    }
+
+    private static XboxLiveAccountPublishResponse ParseAccountPublishResponse(string response)
+    {
+        XboxLiveAccountPublishResponse result = DeserializeOperationResponse<XboxLiveAccountPublishResponse>(
+            response, "account publish");
+        return string.IsNullOrWhiteSpace(result.Status)
+            ? throw new InvalidDataException("The account publish response did not contain a status.")
+            : result;
     }
 
     private static XboxLiveCommitResponse ParseCommitResponse(string response)
@@ -729,12 +865,6 @@ public sealed record XboxLiveConfigurationsRequest(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ContinuationToken = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TitleId = null);
 
-public sealed record XboxLiveConfigurationRequest(
-    long? SellerId,
-    Guid? Scid,
-    string Sandbox,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TitleId = null);
-
 public sealed record XboxLiveConfigurationSummary(
     string Sandbox,
     bool HasWorkingConfiguration,
@@ -796,6 +926,24 @@ internal sealed record XboxLivePublishApiRequest(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TitleId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool AllowSharedConfiguration = false);
 
+internal sealed record XboxLiveAccountPublishApiRequest(
+    long? SellerId,
+    bool ValidateOnly);
+
+internal sealed record XboxLiveConfigurationStatusRequest(
+    long? SellerId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? Scid,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TitleId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Sandbox,
+    string Scope);
+
+internal sealed record XboxLiveConfigurationHistoryRequest(
+    long? SellerId,
+    Guid Scid,
+    string Sandbox,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PageSize,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ContinuationToken = null);
+
 internal sealed record XboxLivePublishStatusRequest(
     long? SellerId,
     Guid? Scid,
@@ -848,6 +996,10 @@ internal sealed record XboxLivePublishResponse
     [JsonPropertyName("Status")]
     public string? Status { get; init; }
 
+    /// <summary>The publish job started, set when <see cref="Status"/> is <c>Running</c>.</summary>
+    [JsonPropertyName("JobId")]
+    public string? JobId { get; init; }
+
     /// <summary>The service's working version of the source, which it sends as a string.</summary>
     [JsonPropertyName("SourceVersion")]
     public JsonElement? SourceVersion { get; init; }
@@ -884,6 +1036,30 @@ internal sealed record XboxLivePublishResponse
             out ulong version) && version > 0
             ? version
             : null;
+}
+
+/// <summary>An account publish the service started, validated, or found already published.</summary>
+internal sealed record XboxLiveAccountPublishResponse
+{
+    /// <summary><c>Running</c>, <c>Validated</c>, or <c>AlreadyPublished</c>.</summary>
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    /// <summary>The publish job, set when <see cref="Status"/> is <c>Running</c>.</summary>
+    [JsonPropertyName("jobId")]
+    public string? JobId { get; init; }
+
+    /// <summary>The account's working version the publish uses.</summary>
+    [JsonPropertyName("sourceVersion")]
+    public ulong? SourceVersion { get; init; }
+
+    /// <summary>The account's published version when the publish started, or null before its first publish.</summary>
+    [JsonPropertyName("previousPublishedVersion")]
+    public ulong? PreviousPublishedVersion { get; init; }
+
+    /// <summary>XBOX services' warnings and other messages that don't block the publish.</summary>
+    [JsonPropertyName("validation")]
+    public JsonElement Validation { get; init; }
 }
 
 /// <summary>The achievement IDs a RETAIL publish would add to RETAIL.</summary>

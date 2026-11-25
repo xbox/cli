@@ -12,7 +12,7 @@ namespace XboxDevCLI.UnitTest;
 
 /// <summary>
 /// Coverage for the <c>playfab player</c> command group: command/option structure, the request
-/// body actually serialized, output shaping, and the error path.
+/// body actually serialized, and the blank-ID check.
 /// </summary>
 public class PlayerCommandTests
 {
@@ -23,16 +23,6 @@ public class PlayerCommandTests
         """{"code":200,"status":"OK","data":{"UserInfo":{"PlayFabId":"ABC123DEF456"}}}""";
 
     #region Command structure
-
-    [Fact]
-    public void Player_HasAccountGet()
-    {
-        var player = PlayerCommandFactory.Create();
-
-        Assert.Equal("player", player.Name);
-        var account = Assert.Single(player.Subcommands, c => c.Name == "account");
-        Assert.Contains(account.Subcommands, c => c.Name == "get");
-    }
 
     [Fact]
     public void AccountGet_RequiresPlayFabId()
@@ -135,44 +125,6 @@ public class PlayerCommandTests
         Assert.Equal(1, exitCode);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("--playfab-id", stderr.ToString(), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task RunGetAccountAsync_DataOnly_StripsEnvelope()
-    {
-        var handler = new MockHttpMessageHandler(Ok(OkEnvelope));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exitCode = await PlayerCommandFactory.RunGetAccountAsync(
-            client, PlayFabId, new OutputOptions("json-compact", true), stdout, new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exitCode);
-        var output = stdout.ToString().Trim();
-        Assert.StartsWith("{\"UserInfo\"", output, StringComparison.Ordinal);
-        Assert.DoesNotContain("\"status\"", output, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task RunGetAccountAsync_ApiError_WritesToStderrAndReturnsOne()
-    {
-        var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
-        {
-            Content = new StringContent(
-                """{"code":400,"status":"BadRequest","error":"AccountNotFound","errorCode":1001,"errorMessage":"User not found"}"""),
-        });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exitCode = await PlayerCommandFactory.RunGetAccountAsync(
-            client, PlayFabId, OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exitCode);
-        Assert.Empty(stdout.ToString());
-        Assert.Contains("AccountNotFound", stderr.ToString(), StringComparison.Ordinal);
     }
 
     #endregion

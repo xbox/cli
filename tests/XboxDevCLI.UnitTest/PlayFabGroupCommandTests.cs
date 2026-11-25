@@ -52,6 +52,16 @@ public class PlayFabGroupCommandTests
         Assert.Contains(opportunity.Subcommands, c => c.Name == "list");
     }
 
+    [Fact]
+    public void ApplicationAccept_RequiresTheApplicantEntity()
+    {
+        var accept = GroupCommandFactory.Create().Subcommands.First(c => c.Name == "application")
+            .Subcommands.First(c => c.Name == "accept");
+
+        Assert.True(accept.Options.First(o => o.Name == "--entity-id").Required);
+        Assert.True(accept.Options.First(o => o.Name == "--entity-type").Required);
+    }
+
     #endregion
 
     #region Build-helper mapping tests

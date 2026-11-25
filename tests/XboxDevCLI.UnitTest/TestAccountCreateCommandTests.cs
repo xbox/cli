@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+using System.IO.Pipes;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -314,7 +315,7 @@ public class TestAccountCreateCommandTests : IDisposable
         Invocation result = await InvokeAsync(CreateArgs("--confirm"), handler);
 
         Assert.Equal(TestAccountCommandFactory.JobNotFinishedExitCode, result.ExitCode);
-        Assert.Equal(1 + TestAccountJobWaiter.MaxConsecutiveReadFailures, handler.Requests.Count);
+        Assert.Equal(1 + XboxPartnerPoller.MaxConsecutiveReadFailures, handler.Requests.Count);
         Assert.Contains("Request timed out.", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("Could not read job job-1", result.Stderr, StringComparison.Ordinal);
     }
@@ -348,6 +349,8 @@ public class TestAccountCreateCommandTests : IDisposable
 
         AssertOutcomeUnknown(result, handler);
         Assert.Contains("Canceled while waiting for the service to answer the create.", result.Stderr, StringComparison.Ordinal);
+        TestAccountCommandTests.AssertCorrelationIdWrittenOnce(
+            result.Stderr, Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]));
     }
 
     [Fact]
@@ -618,6 +621,10 @@ public class TestAccountCreateCommandTests : IDisposable
 
         AssertOutcomeUnknown(result, handler);
         Assert.Contains("Timed out waiting for the service", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains(
+            $"x-ms-correlation-id: {Assert.Single(handler.LastRequest!.Headers.GetValues("x-ms-correlation-id"))}",
+            result.Stderr,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1123,6 +1130,64 @@ public class TestAccountCreateCommandTests : IDisposable
         AssertNoSecrets(result);
     }
 
+    [Fact]
+    public async Task Create_RefusesToReadTheSecurityAnswerFromATerminal()
+    {
+        TestAccountCommandFactory.Dependencies = TestAccountSecretReaderTests.Dependencies(interactive: true);
+        var handler = new XboxPartnerHttpMessageHandler(Job(HttpStatusCode.Accepted, "running"));
+
+        Invocation result = await InvokeAsync(
+            ["test-account", "batch", "create", "--seller-id", "1234567", "--email-prefix", "ABCD-tester",
+             "--count", "1", "--sandbox-id", "ABCD.1", "--password-file", _passwordFile, "--security-answer-file", "-",
+             "--confirm", "--no-wait"],
+            handler);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(handler.Requests);
+        Assert.Contains(
+            "--security-answer-file - reads the security answer from stdin, which is a terminal here",
+            result.Stderr,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Create_CtrlCWhileReadingStandardInputThatStaysOpenSaysNothingWasCreated()
+    {
+        var writer = new AnonymousPipeServerStream(PipeDirection.Out);
+        var reader = new AnonymousPipeClientStream(PipeDirection.In, writer.ClientSafePipeHandle);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        TestAccountCommandFactory.Dependencies = TestAccountSecretReaderTests.Dependencies() with
+        {
+            GetStandardInput = () => new StreamReader(reader, new UTF8Encoding(false)),
+        };
+        var handler = new XboxPartnerHttpMessageHandler(Job(HttpStatusCode.Accepted, "running"));
+
+        // Task.Run and the bound make a read that ignores cancellation fail with a TimeoutException
+        // instead of hanging the test.
+        var invocation = Task.Run(() => InvokeAsync(
+            ["test-account", "batch", "create", "--seller-id", "1234567", "--email-prefix", "ABCD-tester",
+             "--count", "1", "--sandbox-id", "ABCD.1", "--password-file", "-", "--security-answer-file", _answerFile,
+             "--confirm", "--no-wait"],
+            handler,
+            cancellation.Token));
+        try
+        {
+            Invocation result = await invocation.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.Empty(handler.Requests);
+            Assert.Contains("Canceled before the create was sent. Nothing was created.", result.Stderr, StringComparison.Ordinal);
+        }
+        finally
+        {
+            // Closing the writer first ends any read still waiting, so the invocation can restore
+            // the console before the next test, and disposing the reader can't block.
+            writer.Dispose();
+            await Task.WhenAny(invocation, Task.Delay(TimeSpan.FromSeconds(10)));
+            reader.Dispose();
+        }
+    }
+
     [Theory]
     [InlineData("--tag", "smoke")]
     [InlineData("--sandbox-id", "ABCD.2")]
@@ -1445,7 +1510,7 @@ public class TestAccountCreateCommandTests : IDisposable
 
     private static void AssertOutcomeUnknown(Invocation result, XboxPartnerHttpMessageHandler handler)
     {
-        Assert.Equal(TestAccountCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("it is unknown whether a batch was created", result.Stderr, StringComparison.Ordinal);

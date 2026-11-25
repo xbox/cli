@@ -45,8 +45,7 @@ dotnet test tests/XboxDevCLI.FuzzTest/XboxDevCLI.FuzzTest.csproj
 Run one target while you work on it:
 
 ```bash
-dotnet test tests/XboxDevCLI.FuzzTest/XboxDevCLI.FuzzTest.csproj \
-  --filter "FullyQualifiedName~DestructiveOperationsFuzzTests"
+dotnet test tests/XboxDevCLI.FuzzTest/XboxDevCLI.FuzzTest.csproj --filter "FullyQualifiedName~DestructiveOperationsFuzzTests"
 ```
 
 Each property runs `FUZZ_ITERATIONS` generated cases, 500 by default. Raise it to fuzz harder,

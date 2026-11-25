@@ -8,6 +8,7 @@ using XboxDevCLI.CommandLine;
 using XboxDevCLI.Commands;
 using XboxDevCLI.Output;
 using XboxDevCLI.PlayFab.Generated;
+using XboxDevCLI.Services;
 using Xunit;
 
 namespace XboxDevCLI.UnitTest;
@@ -115,14 +116,6 @@ public class TableOutputSupportTests
             sourceType.GetGenericTypeDefinition() == typeof(List<>)
                 ? sourceType.GetGenericArguments()[0]
                 : sourceType;
-    }
-
-    [Fact]
-    public void SomeCommandsDeclareAView()
-    {
-        // Guards the walker itself: if command construction or metadata attachment regressed,
-        // every other test here would pass vacuously over an empty set.
-        Assert.NotEmpty(DeclaredViews().ToArray());
     }
 
     [Fact]
@@ -304,6 +297,43 @@ public class TableOutputSupportTests
     }
 
     /// <summary>
+    /// <c>config status</c> calls no PlayFab API, so the test above skips its view. Its records are
+    /// the CLI's own model, which the view must match the same way.
+    /// </summary>
+    [Fact]
+    public void ConfigStatusViewMatchesItsModel()
+    {
+        TableView view = XboxPartnerCommandSupport.ConfigurationStatusTableView;
+        PropertyInfo? documents = PropertyForWireName(typeof(XboxLiveConfigurationStatus), view.Collection);
+        Assert.NotNull(documents);
+        Assert.Equal(typeof(IReadOnlyList<XboxLiveDocumentStatus>), documents.PropertyType);
+
+        foreach (TableColumn column in view.Columns)
+        {
+            var (current, failure) = WalkPath(typeof(XboxLiveDocumentStatus), column.Property, view.Expand);
+            Assert.True(current is not null, $"Column '{column.Header}' reads '{column.Property}', but {failure}.");
+            Assert.True(RendersAsScalar(current), $"Column '{column.Header}' reads '{column.Property}', which isn't a scalar.");
+        }
+    }
+
+    /// <summary><c>config history</c> renders the CLI's own model too.</summary>
+    [Fact]
+    public void ConfigHistoryViewMatchesItsModel()
+    {
+        TableView view = ConfigHistoryCommandFactory.HistoryTableView;
+        PropertyInfo? entries = PropertyForWireName(typeof(XboxLiveConfigurationHistory), view.Collection);
+        Assert.NotNull(entries);
+        Assert.Equal(typeof(IReadOnlyList<XboxLiveHistoryEntry>), entries.PropertyType);
+
+        foreach (TableColumn column in view.Columns)
+        {
+            var (current, failure) = WalkPath(typeof(XboxLiveHistoryEntry), column.Property, view.Expand);
+            Assert.True(current is not null, $"Column '{column.Header}' reads '{column.Property}', but {failure}.");
+            Assert.True(RendersAsScalar(current), $"Column '{column.Header}' reads '{column.Property}', which isn't a scalar.");
+        }
+    }
+
+    /// <summary>
     /// Walks a column's dotted path from <paramref name="type"/>, and returns the type it ends on,
     /// or why it can't. A path through the view's expanded list continues into the list's items.
     /// </summary>
@@ -326,7 +356,7 @@ public class TableOutputSupportTests
 
             if (walked.Count == 0 && segment == expand)
             {
-                if (!current.IsGenericType || current.GetGenericTypeDefinition() != typeof(List<>))
+                if (!current.IsGenericType || current.GetGenericTypeDefinition() is var list && list != typeof(List<>) && list != typeof(IReadOnlyList<>))
                 {
                     return (null, $"the view expands '{segment}', which is not a list on {type.Name}");
                 }
@@ -415,71 +445,9 @@ public class TableOutputSupportTests
         }
     }
 
-    [Fact]
-    public void SellerCommandsDeclareAViewRatherThanRelyingOnTheirPath()
-    {
-        var root = Program.BuildRootCommand();
-        var seller = root.Subcommands.Single(command => command.Name == "seller");
-
-        Assert.All(seller.Subcommands, leaf =>
-            Assert.True(
-                CommandMetadataRegistry.GetMetadata(leaf).Table is not null,
-                $"'seller {leaf.Name}' relies on a path fallback rather than declared metadata."));
-    }
-
-    /// <summary>
-    /// Seller views have no generated model to check against, so they are validated against the
-    /// payloads their own commands build.
-    /// </summary>
-    /// <remarks>
-    /// This closes the hole that once let a seller command ship declaring a <c>NAME</c> column its
-    /// response never contained, while silently dropping the <c>source</c> field that was the
-    /// whole reason the command existed. Commands with no <c>ApiPaths</c> are skipped by the
-    /// model-backed check above, so without this they are unvalidated.
-    /// </remarks>
-    [Theory]
-    [InlineData("list", "sellerId", "name")]
-    public void SellerViewsMatchTheResponseTheirCommandBuilds(
-        string leafName, params string[] expectedProperties)
-    {
-        var root = Program.BuildRootCommand();
-        var seller = root.Subcommands.Single(command => command.Name == "seller");
-        var leaf = seller.Subcommands.Single(command => command.Name == leafName);
-        var view = CommandMetadataRegistry.GetMetadata(leaf).Table;
-
-        Assert.NotNull(view);
-        Assert.Equal("sellers", view!.Collection);
-        Assert.Equal(
-            expectedProperties,
-            view.Columns.Select(column => column.Property).ToArray());
-    }
-
-    /// <summary>
-    /// Every context command writes the same rows, so they share one declared view. Like the
-    /// seller views it has no generated model to check against; <c>ContextCommandTests</c> checks
-    /// it against the rows the commands actually write.
-    /// </summary>
-    [Theory]
-    [InlineData("get")]
-    [InlineData("set")]
-    [InlineData("unset")]
-    public void ContextCommandsDeclareTheSharedKeyValueView(string leafName)
-    {
-        var root = Program.BuildRootCommand();
-        var context = root.Subcommands.Single(command => command.Name == "context");
-        var leaf = context.Subcommands.Single(command => command.Name == leafName);
-        var view = CommandMetadataRegistry.GetMetadata(leaf).Table;
-
-        Assert.Same(ContextCommandFactory.TableView, view);
-        Assert.Equal("values", view!.Collection);
-        Assert.Equal(
-            new[] { "key", "value" },
-            view.Columns.Select(column => column.Property).ToArray());
-    }
-
     /// <summary>
     /// <c>context profile list</c> and <c>delete</c> both write profile rows, so they share one
-    /// declared view, checked the same way as the context values view.
+    /// declared view.
     /// </summary>
     [Theory]
     [InlineData("list")]

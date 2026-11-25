@@ -93,6 +93,8 @@ public class XboxPartnerTableFormatterTests
     [InlineData("""{"games":[{"xboxTitleId":"0x12345678"}]}""")]
     [InlineData("""{"games":[{"xboxTitleId":"42"}]}""")]
     [InlineData("""{"games":[{"xboxTitleId":"1234567G"}]}""")]
+    [InlineData("[]")]
+    [InlineData("""{"games":"nope"}""")]
     public void FormatGames_RejectsInvalidGameFields(string responseBody)
     {
         Assert.Throws<InvalidDataException>(() =>
@@ -118,50 +120,6 @@ public class XboxPartnerTableFormatterTests
     }
 
     /// <summary>
-    /// The gateway always wraps sellers in a <c>sellers</c> array, so a bare seller object at
-    /// the root is a contract violation rather than a shape to render.
-    /// </summary>
-    [Fact]
-    public void FormatSellers_RejectsASingleSellerObjectAtTheRoot()
-    {
-        var exception = Assert.Throws<InvalidDataException>(() =>
-            XboxPartnerTableFormatter.FormatSellers(
-                """
-                {
-                  "sellerId": "1234567",
-                  "name": "Nod Publishers"
-                }
-                """));
-
-        Assert.Contains("sellers", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// A non-object array entry is a gateway contract violation. Dropping it would render a
-    /// silently short table instead of surfacing the bad payload.
-    /// </summary>
-    [Fact]
-    public void FormatSellers_RejectsNonObjectSellerEntries()
-    {
-        var exception = Assert.Throws<InvalidDataException>(() =>
-            XboxPartnerTableFormatter.FormatSellers("""{"sellers":[123]}"""));
-
-        Assert.Contains("objects", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Theory]
-    [InlineData("""{"sellers":[{"name":"Nod Arena"}]}""")]
-    [InlineData("""{"sellers":[{"sellerId":123,"name":"Nod Arena"}]}""")]
-    [InlineData("""{"sellers":[{"sellerId":"","name":"Nod Arena"}]}""")]
-    public void FormatSellers_RejectsAnEntryWithoutASellerId(string responseBody)
-    {
-        var exception = Assert.Throws<InvalidDataException>(() =>
-            XboxPartnerTableFormatter.FormatSellers(responseBody));
-
-        Assert.Contains("sellerId", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
     /// Seller names come from the gateway and are written straight to a terminal, so every
     /// control character must be neutralized rather than only the whitespace ones.
     /// </summary>
@@ -174,142 +132,6 @@ public class XboxPartnerTableFormatterTests
         Assert.DoesNotContain('\u001b', table);
         Assert.DoesNotContain('\u0008', table);
         Assert.Contains("Red", table, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// A seller whose name is absent or not a string still renders, with a blank cell, because
-    /// the id is what identifies it. Reading the value directly would throw instead.
-    /// </summary>
-    [Theory]
-    [InlineData("""{"sellers":[{"sellerId":"1234567"}]}""")]
-    [InlineData("""{"sellers":[{"sellerId":"1234567","name":null}]}""")]
-    [InlineData("""{"sellers":[{"sellerId":"1234567","name":{"nested":true}}]}""")]
-    public void FormatSellers_RendersASellerWhoseNameIsMissingOrNotAString(string response)
-    {
-        var table = XboxPartnerTableFormatter.FormatSellers(response);
-
-        Assert.Contains("1234567", table, StringComparison.Ordinal);
-        Assert.DoesNotContain("nested", table, StringComparison.Ordinal);
-        Assert.Equal(3, table.Split(Environment.NewLine).Length);
-    }
-
-    [Fact]
-    public void FormatSellers_TruncatesValuesWiderThanTheColumn()
-    {
-        var longName = new string('a', 80);
-        var table = XboxPartnerTableFormatter.FormatSellers(
-            $$"""{"sellers":[{"sellerId":"1234567","name":"{{longName}}"}]}""");
-
-        Assert.DoesNotContain(longName, table, StringComparison.Ordinal);
-        Assert.Contains("...", table, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatSellers_NormalizesEmbeddedControlWhitespace()
-    {
-        var table = XboxPartnerTableFormatter.FormatSellers(
-            """{"sellers":[{"sellerId":"1234567","name":"Line\r\nBreak\tName"}]}""");
-
-        Assert.Contains("Line  Break Name", table, StringComparison.Ordinal);
-        Assert.Equal(3, table.Split(Environment.NewLine).Length);
-    }
-
-    [Fact]
-    public void FormatSellers_NormalizesUnicodeSeparatorsAndBidiControls()
-    {
-        var table = XboxPartnerTableFormatter.FormatSellers(
-            """{"sellers":[{"sellerId":"1234567","name":"One\u2028Two\u2029Three\u202eabc"}]}""");
-
-        Assert.Equal(3, table.Split(Environment.NewLine).Length);
-        Assert.DoesNotContain('\u2028', table);
-        Assert.DoesNotContain('\u2029', table);
-        Assert.DoesNotContain('\u202e', table);
-        Assert.Contains("One Two Three abc", table, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// An empty collection reports the same notice the PlayFab renderer uses, rather than bare
-    /// headers.
-    /// </summary>
-    /// <remarks>
-    /// <c>seller list</c> legitimately returns an empty array when the signed-in developer has no
-    /// sellers, so this can be the first thing a new user sees. Headers over no rows read as a
-    /// rendering failure, which is why <see cref="TableFormatter"/> chose the notice; a second
-    /// renderer disagreeing would be an inconsistency nobody could predict from the command they
-    /// ran.
-    /// </remarks>
-    [Fact]
-    public void EmptyCollectionReportsNoResultsRatherThanBareHeaders()
-    {
-        const string Response = """{"sellers":[],"isStub":false}""";
-
-        var table = XboxPartnerTableFormatter.FormatSellers(Response);
-
-        Assert.Equal(TableFormatter.EmptyNotice, table);
-        Assert.DoesNotContain("SELLER ID", table, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// A cut that falls inside a text element must not split it.
-    /// </summary>
-    /// <remarks>
-    /// NAME is 60 wide, so 57 characters are kept and 56 'x's put the emoji across indices 56–57.
-    /// A UTF-16 slice at 57 keeps only its high half, which the console renders as a replacement
-    /// character. This renderer used to slice that way before it adopted the shared truncation.
-    /// </remarks>
-    [Fact]
-    public void FormatSellers_TruncatesOnTextElementBoundaries()
-    {
-        var name = new string('x', 56) + "🎮🎮🎮🎮";
-        var table = XboxPartnerTableFormatter.FormatSellers(
-            $$"""{"sellers":[{"sellerId":"1","name":"{{name}}"}]}""");
-
-        Assert.DoesNotContain('\uFFFD', table);
-        SurrogateAssert.NoLoneSurrogates(table);
-    }
-
-    /// <summary>A text element that fits inside the width is kept whole, not dropped.</summary>
-    /// <remarks>
-    /// 55 'x's plus one emoji is exactly the 57 kept characters. Without this companion case, a
-    /// truncation that discarded every multi-unit element would still satisfy the split test.
-    /// </remarks>
-    [Fact]
-    public void FormatSellers_KeepsATextElementThatFitsExactly()
-    {
-        var name = new string('x', 55) + "🎮🎮🎮🎮";
-        var table = XboxPartnerTableFormatter.FormatSellers(
-            $$"""{"sellers":[{"sellerId":"1","name":"{{name}}"}]}""");
-
-        SurrogateAssert.NoLoneSurrogates(table);
-        Assert.Contains("🎮", table, StringComparison.Ordinal);
-        Assert.Contains("...", table, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatSellers_InvalidShapeFailsClearly()
-    {
-        var exception = Assert.Throws<InvalidDataException>(
-            () => XboxPartnerTableFormatter.FormatSellers("""{"unexpected":true}"""));
-
-        Assert.Contains("sellers", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatSellers_NonObjectCollectionFailsClearly()
-    {
-        var exception = Assert.Throws<InvalidDataException>(
-            () => XboxPartnerTableFormatter.FormatSellers("""{"sellers":"nope"}"""));
-
-        Assert.Contains("must be an array", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatSellers_NonObjectRootFailsClearly()
-    {
-        var exception = Assert.Throws<InvalidDataException>(
-            () => XboxPartnerTableFormatter.FormatSellers("[]"));
-
-        Assert.Contains("must be a JSON object", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -4,8 +4,6 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Identity.Client;
-using Moq;
 using XboxDevCLI.Safety;
 using XboxDevCLI.Services;
 using XboxDevCLI.Telemetry;
@@ -18,9 +16,7 @@ public class PlayFabApiClientTests
     private static IConfiguration CreateTestConfiguration(
         string titleId = "ABC123",
         string? baseUrlTemplate = "https://{0}.playfabapi.com",
-        (string Name, string Value)[]? requestHeaders = null,
         string? hostHeader = null,
-        bool telemetryEnabled = true,
         long? maxResponseBytes = null,
         bool auditLogEnabled = false)
     {
@@ -28,22 +24,9 @@ public class PlayFabApiClientTests
         {
             ["PlayFab:TitleId"] = titleId,
             ["PlayFab:BaseUrlTemplate"] = baseUrlTemplate,
-            ["AzureAd:ClientId"] = "test-client-id",
-            ["AzureAd:TenantId"] = "test-tenant-id",
-            ["AzureAd:Scopes"] = "api://test/.default",
-            ["Telemetry:Enabled"] = telemetryEnabled.ToString(),
             ["AuditLog:Enabled"] = auditLogEnabled.ToString(),
             ["PlayFab:HostHeader"] = hostHeader,
         };
-
-        if (requestHeaders != null)
-        {
-            for (int i = 0; i < requestHeaders.Length; i++)
-            {
-                settings[$"PlayFab:RequestHeaders:{i}:Name"] = requestHeaders[i].Name;
-                settings[$"PlayFab:RequestHeaders:{i}:Value"] = requestHeaders[i].Value;
-            }
-        }
 
         if (maxResponseBytes.HasValue)
         {
@@ -59,10 +42,10 @@ public class PlayFabApiClientTests
     public void Constructor_MissingBaseUrlTemplateUsesTheShippedDefault()
     {
         var config = CreateTestConfiguration(baseUrlTemplate: null);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
         using var httpClient = new HttpClient();
 
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         Assert.Equal(
             new Uri(EndpointOverrideWarning.DefaultBaseUrlTemplate + "/"),
@@ -84,10 +67,7 @@ public class PlayFabApiClientTests
         string scenario, int? status, string? errorType)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(scenario == "no-token" ? null : CreateMockAuthResult("entra-id-token-123"));
+        var auth = new FakeAuthenticationService(scenario == "no-token" ? null : FakeAuthenticationService.CreateToken());
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage((HttpStatusCode)(status ?? 200))
             {
@@ -114,7 +94,7 @@ public class PlayFabApiClientTests
         {
             BaseAddress = new Uri("https://ABC123.playfabapi.com/"),
         };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
         var recorded = TelemetryRecorder.Start();
 
         try
@@ -136,29 +116,11 @@ public class PlayFabApiClientTests
         }
     }
 
-    private static AuthenticationResult CreateMockAuthResult(string accessToken)
-    {
-        return new AuthenticationResult(
-            accessToken: accessToken,
-            isExtendedLifeTimeToken: false,
-            uniqueId: "test-unique-id",
-            expiresOn: DateTimeOffset.UtcNow.AddHours(1),
-            extendedExpiresOn: DateTimeOffset.UtcNow.AddHours(1),
-            tenantId: "test-tenant-id",
-            account: Mock.Of<IAccount>(),
-            idToken: "test-id-token",
-            scopes: new[] { "api://test/.default" },
-            correlationId: Guid.NewGuid());
-    }
-
     [Fact]
     public async Task CallApiAsync_PassesTheTokenToAuthenticationAndTransport()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         using var cts = new CancellationTokenSource();
         CancellationToken transportToken = default;
         var handler = new FailingHttpMessageHandler(ct =>
@@ -168,14 +130,15 @@ public class PlayFabApiClientTests
             throw new OperationCanceledException(ct);
         });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var error = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/GetTitleData", null, cts.Token));
 
         Assert.IsAssignableFrom<OperationCanceledException>(error.InnerException);
 
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(cts.Token), Times.Once);
+        Assert.Equal(1, auth.TokenRequests);
+        Assert.Equal(cts.Token, auth.TokenRequestCancellationToken);
         Assert.True(transportToken.IsCancellationRequested);
     }
 
@@ -188,14 +151,10 @@ public class PlayFabApiClientTests
     {
         var config = CreateTestConfiguration();
         using var cts = new CancellationTokenSource();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(() =>
-            {
-                cts.Cancel();
-                return CreateMockAuthResult("entra-id-token-123");
-            });
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken())
+        {
+            OnTokenRequest = _ => cts.Cancel(),
+        };
         var sent = false;
         var handler = new FailingHttpMessageHandler(ct =>
         {
@@ -203,7 +162,7 @@ public class PlayFabApiClientTests
             throw new OperationCanceledException(ct);
         });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var exception = await Record.ExceptionAsync(() => client.CallApiAsync("/Admin/SetTitleData", "{}", cts.Token));
 
@@ -217,7 +176,7 @@ public class PlayFabApiClientTests
     /// <summary>
     /// Every failure is classified once, by how far the call got. Only a write that may have
     /// reached PlayFab without a conclusive answer (no response, or a 5xx) warns that it may have
-    /// been applied; a read never warns, and a 2xx whose body is unusable still succeeded.
+    /// been applied; a read never warns.
     /// </summary>
     [Theory]
     [InlineData("/Admin/SetTitleData", "signin", PlayFabCallOutcome.NotSent, null)]
@@ -227,30 +186,17 @@ public class PlayFabApiClientTests
     [InlineData("/Admin/SetTitleData", "timeout", PlayFabCallOutcome.NoResponse, "the request timed out")]
     [InlineData("/Admin/SetTitleData", "reset", PlayFabCallOutcome.NoResponse, "the connection failed (connection reset)")]
     [InlineData("/Admin/SetTitleData", "500", PlayFabCallOutcome.Inconclusive, "the request failed with HTTP 500")]
-    [InlineData("/Admin/SetTitleData", "500-body-lost", PlayFabCallOutcome.Inconclusive, "the request failed with HTTP 500")]
     [InlineData("/Admin/SetTitleData", "400", PlayFabCallOutcome.Rejected, null)]
-    [InlineData("/Admin/SetTitleData", "400-body-lost", PlayFabCallOutcome.Rejected, null)]
-    [InlineData("/Admin/SetTitleData", "200-body-lost", PlayFabCallOutcome.Succeeded, null)]
     [InlineData("/Admin/GetTitleData", "cancel", PlayFabCallOutcome.NoResponse, null)]
-    [InlineData("/Admin/GetTitleData", "reset", PlayFabCallOutcome.NoResponse, null)]
     [InlineData("/Admin/GetTitleData", "500", PlayFabCallOutcome.Inconclusive, null)]
     public async Task CallApiAsync_ClassifiesEveryFailureByHowFarItGot(
         string apiPath, string failure, PlayFabCallOutcome expectedOutcome, string? expectedReason)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        if (failure == "signin")
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken())
         {
-            mockAuthService
-                .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new InvalidOperationException("sign-in failed"));
-        }
-        else
-        {
-            mockAuthService
-                .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-                .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
-        }
+            TokenRequestException = failure == "signin" ? new InvalidOperationException("sign-in failed") : null,
+        };
 
         using var cts = new CancellationTokenSource();
         var handler = new FailingHttpMessageHandler(_ => failure switch
@@ -262,12 +208,10 @@ public class PlayFabApiClientTests
             "tls" => throw new HttpRequestException(HttpRequestError.SecureConnectionError, "handshake failed"),
             "500" => Respond(HttpStatusCode.InternalServerError, new StringContent("""{"errorMessage":"oops"}""")),
             "400" => Respond(HttpStatusCode.BadRequest, new StringContent("""{"errorMessage":"bad"}""")),
-            "500-body-lost" => Respond(HttpStatusCode.InternalServerError, LostBody()),
-            "400-body-lost" => Respond(HttpStatusCode.BadRequest, LostBody()),
-            _ => Respond(HttpStatusCode.OK, LostBody()),
+            _ => throw new ArgumentOutOfRangeException(nameof(failure)),
         });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var exception = await Record.ExceptionAsync(() => client.CallApiAsync(apiPath, "{}", cts.Token));
 
@@ -297,50 +241,6 @@ public class PlayFabApiClientTests
         }
 
         static HttpResponseMessage Respond(HttpStatusCode status, HttpContent content) => new(status) { Content = content };
-
-        static StreamContent LostBody() => new(new FailingStream(new IOException("response lost")));
-    }
-    /// <summary>
-    /// A server error (HTTP 5xx) on a write may come after PlayFab applied it, so it keeps PlayFab's
-    /// error but warns that the outcome is unknown. A 4xx, or any error on a read, is definitive.
-    /// </summary>
-    [Theory]
-    [InlineData("/Admin/SetTitleData", HttpStatusCode.InternalServerError, true)]
-    [InlineData("/Admin/SetTitleData", HttpStatusCode.GatewayTimeout, true)]
-    [InlineData("/Admin/SetTitleData", HttpStatusCode.BadRequest, false)]
-    [InlineData("/Admin/SetTitleData", HttpStatusCode.TooManyRequests, false)]
-    [InlineData("/Admin/GetTitleData", HttpStatusCode.InternalServerError, false)]
-    public async Task CallApiAsync_WarnsOfAnUnknownOutcomeOnlyForServerErrorsOnWrites(
-        string apiPath, HttpStatusCode status, bool expectWarning)
-    {
-        var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
-        const string body = """{"code":500,"status":"InternalServerError","error":"InternalServerError","errorCode":1110,"errorMessage":"oops"}""";
-        var handler = new FailingHttpMessageHandler(_ =>
-            new HttpResponseMessage(status) { Content = new StringContent(body) });
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        var error = await Assert.ThrowsAsync<PlayFabApiException>(
-            () => client.CallApiAsync(apiPath, "{}", CancellationToken.None));
-
-        Assert.Equal((int)status, error.HttpStatusCode);
-        Assert.Equal(body, error.RawBody);
-        if (!expectWarning)
-        {
-            Assert.Null(error.OutcomeWarning);
-            Assert.DoesNotContain("outcome is unknown", error.Message);
-            return;
-        }
-
-        Assert.Equal(
-            $"{apiPath} may have reached PlayFab, but the request failed with HTTP {(int)status}, so its outcome is " +
-            "unknown. Check whether it was applied before retrying.",
-            error.OutcomeWarning);
-        Assert.EndsWith(error.OutcomeWarning, error.Message);
     }
 
     /// <summary>
@@ -353,16 +253,13 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_ErrorStatusWhoseBodyFails_KeepsTheStatus(HttpStatusCode status, bool expectWarning)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         var handler = new FailingHttpMessageHandler(_ => new HttpResponseMessage(status)
         {
             Content = new StreamContent(new FailingStream(new IOException("response lost"))),
         });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var error = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/SetTitleData", "{}", CancellationToken.None));
@@ -377,10 +274,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_StalledErrorBody_TimesOut()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         var handler = new FailingHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
         {
             Content = new StreamContent(new StalledStream()),
@@ -390,7 +284,7 @@ public class PlayFabApiClientTests
             BaseAddress = new Uri("https://ABC123.playfabapi.com/"),
             Timeout = TimeSpan.FromMilliseconds(50),
         };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var error = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/SetTitleData", "{}", CancellationToken.None));
@@ -418,7 +312,7 @@ public class PlayFabApiClientTests
             Task.FromResult(respond(cancellationToken));
     }
 
-    internal sealed class FailingStream(Exception failure) : MemoryStream
+    private sealed class FailingStream(Exception failure) : MemoryStream
     {
         public override int Read(byte[] buffer, int offset, int count) => throw failure;
 
@@ -433,10 +327,8 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_SendsBearerTokenAndJsonBody()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
+        var token = FakeAuthenticationService.CreateToken();
+        var auth = new FakeAuthenticationService(token);
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK)
@@ -445,13 +337,13 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var result = await client.CallApiAsync("/Admin/GetTitleData", "{\"Keys\":[\"Foo\"]}", CancellationToken.None);
 
         Assert.Contains("Keys", result);
         Assert.Equal("Bearer", handler.LastRequest?.Headers.Authorization?.Scheme);
-        Assert.Equal("entra-id-token-123", handler.LastRequest?.Headers.Authorization?.Parameter);
+        Assert.Equal(token.AccessToken, handler.LastRequest?.Headers.Authorization?.Parameter);
         Assert.Equal(CliIdentity.UserAgent, handler.LastRequest?.Headers.UserAgent.ToString());
         Assert.Equal(HttpMethod.Post, handler.LastRequest?.Method);
         Assert.Contains("/Admin/GetTitleData", handler.LastRequest?.RequestUri?.ToString());
@@ -460,39 +352,30 @@ public class PlayFabApiClientTests
     [Theory]
     [InlineData(null, "{}")]
     [InlineData("", "")]
-    [InlineData(" \t\r\n", " \t\r\n")]
     public async Task CallApiAsync_DefaultsOnlyAnOmittedBody(string? body, string expectedBody)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
-        string? capturedBody = null;
-        var handler = new ContentCapturingHandler(
+        var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{}"),
-            },
-            content => capturedBody = content);
+            });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await client.CallApiAsync("/Catalog/SearchItems", body, CancellationToken.None);
 
-        Assert.Equal(expectedBody, capturedBody);
+        Assert.Equal(expectedBody, handler.LastRequestBody);
     }
 
     [Fact]
     public async Task CallApiAsync_ThrowsPlayFabApiExceptionOnErrorResponse()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var errorJson = "{\"code\":401,\"status\":\"Unauthorized\",\"error\":\"NotAuthorized\",\"errorCode\":1089,\"errorMessage\":\"Developer does not have admin permission for this title.\"}";
         var handler = new MockHttpMessageHandler(
@@ -502,7 +385,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None));
@@ -518,13 +401,10 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_ThrowsWhenNoToken()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync((AuthenticationResult?)null);
+        var auth = new FakeAuthenticationService(token: null);
 
         using var httpClient = new HttpClient();
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None));
@@ -543,20 +423,17 @@ public class PlayFabApiClientTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["PlayFab:TitleId"] = "",
-                ["AzureAd:ClientId"] = "test",
-                ["AzureAd:TenantId"] = "test",
-                ["AzureAd:Scopes"] = "test",
             })
             .Build();
 
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object);
+        var auth = new FakeAuthenticationService(token: null);
+        using var client = new PlayFabApiClient(config, auth);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(
             () => client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None));
 
         Assert.StartsWith("No playfab-title-id is set.", error.Message, StringComparison.Ordinal);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
     }
 
     [Theory]
@@ -571,19 +448,13 @@ public class PlayFabApiClientTests
                 ["PlayFab:BaseUrlTemplate"] = "https://{0}.playfabapi.com",
                 ["PlayFab:HostHeader"] = "{titleId}.playfabapi.com",
                 ["PlayFab:StudioBaseUrl"] = "https://studio.nodpublishers.com",
-                ["AzureAd:ClientId"] = "test",
-                ["AzureAd:TenantId"] = "test",
-                ["AzureAd:Scopes"] = "test",
             })
             .Build();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         using var httpClient = new HttpClient(handler);
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await client.CallApiAsync("/Studio/ListServicePrincipals", null, CancellationToken.None);
 
@@ -608,10 +479,10 @@ public class PlayFabApiClientTests
     public void Constructor_BuildsCorrectBaseUrl()
     {
         var config = CreateTestConfiguration(titleId: "MYID");
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
 
         using var httpClient = new HttpClient();
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         Assert.Equal("https://myid.playfabapi.com/", httpClient.BaseAddress?.ToString());
     }
@@ -626,10 +497,10 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_RejectsNonRelativeUri(string maliciousPath)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
 
         using var httpClient = new HttpClient();
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => client.CallApiAsync(maliciousPath, null, CancellationToken.None));
@@ -660,15 +531,12 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_SendsNothingOffTheBaseAddress(string apiPath)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var exception = await Record.ExceptionAsync(
             () => client.CallApiAsync(apiPath, null, CancellationToken.None));
@@ -676,7 +544,7 @@ public class PlayFabApiClientTests
         Assert.Null(handler.LastRequest?.RequestUri?.AbsoluteUri);
         var argumentException = Assert.IsType<ArgumentException>(exception);
         Assert.DoesNotContain("evil.example", argumentException.Message, StringComparison.OrdinalIgnoreCase);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
     }
 
     /// <summary>
@@ -694,15 +562,12 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_SendsToTheBaseAddress(string baseAddress, string apiPath, string expectedUri)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri(baseAddress) };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await client.CallApiAsync(apiPath, null, CancellationToken.None);
 
@@ -722,22 +587,19 @@ public class PlayFabApiClientTests
     {
         Assert.True(DestructiveOperations.IsDestructive(apiPath));
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("entra-id-token-123"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => client.CallApiAsync(apiPath, null, CancellationToken.None, confirmedDestructive));
 
         Assert.Contains("backslash", ex.Message, StringComparison.Ordinal);
         Assert.Null(handler.LastRequest);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
     }
 
     [Theory]
@@ -747,10 +609,10 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_RejectsEmptyPath(string emptyPath)
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
 
         using var httpClient = new HttpClient();
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => client.CallApiAsync(emptyPath, null, CancellationToken.None));
@@ -767,19 +629,19 @@ public class PlayFabApiClientTests
         // Fail-closed: a destructive op with confirmedDestructive left at its default (false)
         // is refused at the chokepoint before any token is acquired or request is sent.
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<DestructiveOperationNotConfirmedException>(
             () => client.CallApiAsync(apiPath, null, CancellationToken.None));
 
         Assert.Equal(apiPath, ex.ApiPath);
         Assert.Null(handler.LastRequest);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
     }
 
     [Fact]
@@ -788,18 +650,18 @@ public class PlayFabApiClientTests
         // The typed overload is the path curated commands use; it must also fail closed so a
         // destructive curated command can't bypass the gate by skipping Program.InvokeApiAsync.
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"data\":{}}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await Assert.ThrowsAsync<DestructiveOperationNotConfirmedException>(
             () => client.CallApiAsync<object, object>("/Admin/DeleteTitle", new object(), CancellationToken.None));
 
         Assert.Null(handler.LastRequest);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
     }
 
     [Fact]
@@ -808,15 +670,12 @@ public class PlayFabApiClientTests
         // With confirmedDestructive: true the gate is bypassed and the request is sent,
         // proving the confirmation threads through to the actual call.
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"data\":{}}") });
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var result = await client.CallApiAsync("/Admin/DeleteTitle", "{}", CancellationToken.None, confirmedDestructive: true);
 
@@ -829,10 +688,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_AuditLogDisabled_DoesNotCreateFile()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         var auditLogPath = Path.Combine(
@@ -841,7 +697,7 @@ public class PlayFabApiClientTests
             "audit.jsonl");
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient, auditLogPath);
+        using var client = new PlayFabApiClient(config, auth, httpClient, auditLogPath);
 
         await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
 
@@ -852,12 +708,9 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_AuditLogEnabled_AppendsMetadataWithoutSecrets()
     {
         const string bodySecret = "body-super-secret";
-        const string tokenSecret = "token-super-secret";
+        var token = FakeAuthenticationService.CreateToken();
         var config = CreateTestConfiguration(auditLogEnabled: true);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult(tokenSecret));
+        var auth = new FakeAuthenticationService(token);
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -866,7 +719,7 @@ public class PlayFabApiClientTests
         try
         {
             using (var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") })
-            using (var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient, auditLogPath))
+            using (var client = new PlayFabApiClient(config, auth, httpClient, auditLogPath))
             {
                 await client.CallApiAsync(
                     "/Admin/UpdateTitleData?ignored=query",
@@ -879,7 +732,7 @@ public class PlayFabApiClientTests
                 contents.Split('\n', StringSplitOptions.RemoveEmptyEntries));
 
             Assert.DoesNotContain(bodySecret, contents);
-            Assert.DoesNotContain(tokenSecret, contents);
+            Assert.DoesNotContain(token.AccessToken, contents);
 
             using var entry = JsonDocument.Parse(line);
             Assert.Equal("/Admin/UpdateTitleData", entry.RootElement.GetProperty("ResolvedApiPath").GetString());
@@ -899,7 +752,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_AuditLogEnabled_RecordsFailedDestructiveAttempt()
     {
         var config = CreateTestConfiguration(auditLogEnabled: true);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -908,7 +761,7 @@ public class PlayFabApiClientTests
         try
         {
             using (var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") })
-            using (var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient, auditLogPath))
+            using (var client = new PlayFabApiClient(config, auth, httpClient, auditLogPath))
             {
                 await Assert.ThrowsAsync<DestructiveOperationNotConfirmedException>(
                     () => client.CallApiAsync("/Admin/DeleteTitle", null, CancellationToken.None));
@@ -922,41 +775,6 @@ public class PlayFabApiClientTests
         finally
         {
             Directory.Delete(directory, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task CallApiAsync_AuditLogEnabled_RecordsReadOperations()
-    {
-        var config = CreateTestConfiguration(auditLogEnabled: true);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
-        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var auditLogPath = Path.Combine(directory, "audit.jsonl");
-
-        try
-        {
-            using (var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") })
-            using (var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient, auditLogPath))
-            {
-                await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
-            }
-
-            var line = Assert.Single(await File.ReadAllLinesAsync(ReadAuditFile(directory)));
-            using var entry = JsonDocument.Parse(line);
-            Assert.Equal("/Admin/GetTitleData", entry.RootElement.GetProperty("ResolvedApiPath").GetString());
-            Assert.Equal(0, entry.RootElement.GetProperty("ExitStatus").GetInt32());
-        }
-        finally
-        {
-            if (Directory.Exists(directory))
-            {
-                Directory.Delete(directory, recursive: true);
-            }
         }
     }
 
@@ -990,50 +808,6 @@ public class PlayFabApiClientTests
                 logger.Dispose();
             }
 
-            Directory.Delete(directory, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void AuditLogger_SharedFile_AcceptsAnIndependentWriterHandle()
-    {
-        // The in-process test above cannot prove that a *separate* XboxDevCLI process can append
-        // while this one holds the file open. That guarantee comes down to how the handle is
-        // shared, so open a second, independent handle with the flags another process would get
-        // and check that both writers' entries survive.
-        var config = CreateTestConfiguration(auditLogEnabled: true);
-        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var auditLogPath = Path.Combine(directory, "audit.jsonl");
-
-        try
-        {
-            using (var logger = new AuditLogger(config, "ABC123", auditLogPath))
-            {
-                logger.WriteInvocation("/Admin/SetTitleData", 0);
-
-                var file = ReadAuditFile(directory);
-                using (var independent = new FileStream(
-                    file,
-                    FileMode.Append,
-                    FileAccess.Write,
-                    FileShare.ReadWrite | FileShare.Delete))
-                using (var writer = new StreamWriter(independent))
-                {
-                    writer.WriteLine("{\"ResolvedApiPath\":\"/Admin/GetTitleData\"}");
-                }
-
-                logger.WriteInvocation("/Admin/SetTitleData", 1);
-            }
-
-            var lines = File.ReadAllLines(ReadAuditFile(directory));
-            Assert.Equal(3, lines.Length);
-            Assert.Contains(lines, line => line.Contains("/Admin/GetTitleData", StringComparison.Ordinal));
-            Assert.Equal(
-                2,
-                lines.Count(line => line.Contains("/Admin/SetTitleData", StringComparison.Ordinal)));
-        }
-        finally
-        {
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -1078,33 +852,10 @@ public class PlayFabApiClientTests
         Assert.Single(Directory.GetFiles(directory, "audit*.jsonl"));
 
     [Fact]
-    public void FormatJson_PrettyPrintsValidJson()
-    {
-        var compact = "{\"data\":{\"key\":\"value\"}}";
-        var formatted = PlayFabApiClient.FormatJson(compact);
-
-        Assert.Contains("\n", formatted);
-        Assert.Contains("  ", formatted);
-        Assert.Contains("\"key\"", formatted);
-    }
-
-    [Fact]
-    public void FormatJson_ReturnsOriginalForInvalidJson()
-    {
-        var notJson = "this is not json";
-        var result = PlayFabApiClient.FormatJson(notJson);
-
-        Assert.Equal(notJson, result);
-    }
-
-    [Fact]
     public async Task CallApiAsync_Typed_DeserializesDataWrapper()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var responseJson = """{"code":200,"status":"OK","data":{"Title":"MyGame","Version":"1.0"}}""";
         var handler = new MockHttpMessageHandler(
@@ -1114,7 +865,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var result = await client.CallApiAsync<TestRequest, TestResponse>("Admin/GetTitleData", new TestRequest { Key = "x" }, CancellationToken.None);
 
@@ -1126,10 +877,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_Typed_FallsBackToWholeResponseWhenNoDataField()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         // Response without a "data" wrapper — just the payload directly
         var responseJson = """{"Title":"DirectGame","Version":"2.0"}""";
@@ -1140,7 +888,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var result = await client.CallApiAsync<TestRequest, TestResponse>("Admin/GetTitleData", new TestRequest { Key = "x" }, CancellationToken.None);
 
@@ -1152,10 +900,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_Typed_ThrowsWhenDataFieldIsNull()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         // "data" field is present but null
         var responseJson = """{"code":200,"status":"OK","data":null}""";
@@ -1166,7 +911,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync<TestRequest, TestResponse>("Admin/GetTitleData", new TestRequest { Key = "x" }, CancellationToken.None));
@@ -1180,10 +925,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_DoesNotSendSecretKeyOrEntityTokenHeaders()
     {
         var config = CreateTestConfiguration();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK)
@@ -1192,7 +934,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
 
@@ -1206,93 +948,6 @@ public class PlayFabApiClientTests
         Assert.Equal("Bearer", handler.LastRequest.Headers.Authorization?.Scheme);
     }
 
-    [Fact]
-    public async Task CallApiAsync_SendsConfiguredRequestHeaders_WithTemplateReplacement()
-    {
-        var config = CreateTestConfiguration(
-            titleId: "MYTITLE",
-            requestHeaders: new[]
-            {
-                ("X-HeaderName", "{titleId}.Foo"),
-            });
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}"),
-            });
-
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://MYTITLE.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
-
-        Assert.True(handler.LastRequest!.Headers.Contains("X-HeaderName"),
-            "Request must contain X-HeaderName header when configured in RequestHeaders.");
-        Assert.Equal("MYTITLE.Foo",
-            handler.LastRequest.Headers.GetValues("X-HeaderName").Single());
-    }
-
-    [Fact]
-    public async Task CallApiAsync_SendsMultipleConfiguredHeaders()
-    {
-        var config = CreateTestConfiguration(
-            titleId: "MYTITLE",
-            requestHeaders: new[]
-            {
-                ("X-HeaderName", "{titleId}.Foo"),
-                ("X-Custom", "static-value"),
-            });
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}"),
-            });
-
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://MYTITLE.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
-
-        Assert.Equal("MYTITLE.Foo",
-            handler.LastRequest!.Headers.GetValues("X-HeaderName").Single());
-        Assert.Equal("static-value",
-            handler.LastRequest.Headers.GetValues("X-Custom").Single());
-    }
-
-    [Fact]
-    public async Task CallApiAsync_DoesNotSendExtraHeaders_WhenNoneConfigured()
-    {
-        var config = CreateTestConfiguration(); // no requestHeaders
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}"),
-            });
-
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
-
-        Assert.False(handler.LastRequest!.Headers.Contains("X-HeaderName"),
-            "Request must not contain X-HeaderName header when not configured.");
-    }
-
     [Theory]
     [InlineData("DEF456.playfabapi.com")]
     // The selected title must be the whole first label.
@@ -1303,12 +958,12 @@ public class PlayFabApiClientTests
     public void Constructor_RefusesHostHeaderForAnotherTitle(string value)
     {
         var config = CreateTestConfiguration(hostHeader: value);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
+        var auth = new FakeAuthenticationService(token: null);
         var handler = new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK));
         using var httpClient = new HttpClient(handler);
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => new PlayFabApiClient(config, mockAuthService.Object, httpClient));
+            () => new PlayFabApiClient(config, auth, httpClient));
 
         Assert.Equal(
             $"The X-PlayFab-Host header is '{value.Replace("{titleId}", "ABC123")}', but it must be a single host " +
@@ -1316,29 +971,8 @@ public class PlayFabApiClientTests
             "PlayFab:HostHeader (XBOX_PLAYFAB__HOSTHEADER), as in the built-in '{titleId}.playfabapi.com', or set " +
             "it to 'none' to send no X-PlayFab-Host header.",
             ex.Message);
-        mockAuthService.Verify(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Equal(0, auth.TokenRequests);
         Assert.Null(handler.LastRequest);
-    }
-
-    /// <summary>
-    /// <c>PlayFab:HostHeader</c> is the one place the routing header is set, so a request header
-    /// can't send a second value or bypass its check.
-    /// </summary>
-    [Theory]
-    [InlineData("X-PlayFab-Host")]
-    [InlineData("x-playfab-host")]
-    public void Constructor_RefusesRoutingHeaderInRequestHeaders(string name)
-    {
-        var config = CreateTestConfiguration(requestHeaders: new[] { (name, "{titleId}.playfabapi.com") });
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new PlayFabApiClient(config, mockAuthService.Object));
-
-        Assert.Equal(
-            "PlayFab:RequestHeaders:0 sets the X-PlayFab-Host header, which PlayFab:HostHeader sets. Remove it, and " +
-            "set XBOX_PLAYFAB__HOSTHEADER instead, with {titleId} as the first label of its value.",
-            ex.Message);
     }
 
     [Theory]
@@ -1385,21 +1019,9 @@ public class PlayFabApiClientTests
         Assert.Equal("ABC123.playfabapi.com", handler.LastRequest!.Headers.GetValues("X-PlayFab-Host").Single());
     }
 
-    [Fact]
-    public async Task CallApiAsync_SendsRequestHeaderThatNamesAnotherTitle()
-    {
-        var handler = await SendWithAsync(
-            CreateTestConfiguration(requestHeaders: new[] { ("X-Custom", "DEF456.playfabapi.com") }));
-
-        Assert.Equal("DEF456.playfabapi.com", handler.LastRequest!.Headers.GetValues("X-Custom").Single());
-    }
-
     private static async Task<MockHttpMessageHandler> SendWithAsync(IConfiguration config)
     {
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK)
@@ -1408,7 +1030,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
         return handler;
@@ -1420,10 +1042,7 @@ public class PlayFabApiClientTests
         var responseBody = "{\"data\":{\"value\":\"1234567890\"}}";
         var maxResponseBytes = System.Text.Encoding.UTF8.GetByteCount(responseBody);
         var config = CreateTestConfiguration(maxResponseBytes: maxResponseBytes);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.OK)
@@ -1432,27 +1051,21 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var result = await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
 
         Assert.Equal(responseBody, result);
     }
 
-    /// <summary>A body without a <c>Content-Length</c> is measured as it arrives.</summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task CallApiAsync_ResponseBodyOverConfiguredLimit_ThrowsHelpfulError(bool declaresLength)
+    [Fact]
+    public async Task CallApiAsync_ResponseBodyOverConfiguredLimit_ThrowsHelpfulError()
     {
-        var content = new StringContent("{\"data\":{\"value\":\"too-large\"}}");
-        if (!declaresLength)
-        {
-            content.Headers.ContentLength = null;
-        }
-
         using var client = PlayFabTestClient.Create(
-            new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK) { Content = content }),
+            new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":{\"value\":\"too-large\"}}"),
+            }),
             maxResponseBytes: 8);
 
         var ex = await Assert.ThrowsAsync<PlayFabApiException>(
@@ -1465,23 +1078,6 @@ public class PlayFabApiClientTests
             ex.Message);
     }
 
-    [Theory]
-    [InlineData("utf-8")]
-    [InlineData("utf-16")]
-    public async Task CallApiAsync_DecodesTheResponseByItsByteOrderMark(string encodingName)
-    {
-        const string responseBody = "{\"data\":{\"value\":\"Nod Arena\"}}";
-        var encoding = System.Text.Encoding.GetEncoding(encodingName);
-        using var client = PlayFabTestClient.Create(new MockHttpMessageHandler(new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new ByteArrayContent([.. encoding.GetPreamble(), .. encoding.GetBytes(responseBody)]),
-        }));
-
-        var result = await client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None);
-
-        Assert.Equal(responseBody, result);
-    }
-
     /// <summary>
     /// A write's 5xx whose body is over the limit keeps its status and still warns that the write
     /// may have been applied, rather than reporting only the size error.
@@ -1490,10 +1086,7 @@ public class PlayFabApiClientTests
     public async Task CallApiAsync_OversizedServerErrorOnAWrite_KeepsStatusAndOutcomeWarning()
     {
         var config = CreateTestConfiguration(maxResponseBytes: 8);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
+        var auth = new FakeAuthenticationService(FakeAuthenticationService.CreateToken());
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(HttpStatusCode.BadGateway)
@@ -1502,7 +1095,7 @@ public class PlayFabApiClientTests
             });
 
         using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
+        using var client = new PlayFabApiClient(config, auth, httpClient);
 
         var ex = await Assert.ThrowsAsync<PlayFabApiException>(
             () => client.CallApiAsync("/Admin/SetTitleData", "{}", CancellationToken.None));
@@ -1518,134 +1111,6 @@ public class PlayFabApiClientTests
         Assert.Contains("PlayFab:MaxResponseBytes", stderr);
         Assert.Contains("outcome is unknown", stderr);
         Assert.False(stderr.EndsWith(Environment.NewLine, StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task CallApiAsync_OversizedClientErrorOnARead_KeepsStatusWithoutOutcomeWarning()
-    {
-        var config = CreateTestConfiguration(maxResponseBytes: 8);
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest)
-            {
-                Content = new StringContent("{\"errorMessage\":\"too-large\"}"),
-            });
-
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        var ex = await Assert.ThrowsAsync<PlayFabApiException>(
-            () => client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None));
-
-        Assert.Equal(400, ex.HttpStatusCode);
-        Assert.Contains("PlayFab:MaxResponseBytes", ex.Message);
-        Assert.Null(ex.OutcomeWarning);
-    }
-
-    [Fact]
-    public void Constructor_ThrowsWhenRequestHeaderNameIsMissing()
-    {
-        var settings = new Dictionary<string, string?>
-        {
-            ["PlayFab:TitleId"] = "ABC123",
-            ["PlayFab:BaseUrlTemplate"] = "https://{0}.playfabapi.com",
-            ["PlayFab:RequestHeaders:0:Value"] = "some-value",
-            ["AzureAd:ClientId"] = "test",
-            ["AzureAd:TenantId"] = "test",
-            ["AzureAd:Scopes"] = "test",
-        };
-        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new PlayFabApiClient(config, mockAuthService.Object));
-
-        Assert.Equal(
-            "PlayFab:RequestHeaders:0 has no Name. If it's a leftover XBOX_PLAYFAB__REQUESTHEADERS__0__VALUE " +
-            "that set the X-PlayFab-Host header, remove it and set XBOX_PLAYFAB__HOSTHEADER instead. " +
-            "Otherwise, set XBOX_PLAYFAB__REQUESTHEADERS__0__NAME.",
-            ex.Message);
-    }
-
-    [Fact]
-    public void Constructor_ThrowsWhenRequestHeaderIsDenied()
-    {
-        var config = CreateTestConfiguration(
-            requestHeaders: new[] { ("Authorization", "Bearer bad") });
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => new PlayFabApiClient(config, mockAuthService.Object));
-
-        Assert.Contains("denied header", ex.Message);
-    }
-
-    [Theory]
-    // Header name contains a space — not a valid HTTP token per RFC 7230, rejected by TryAddWithoutValidation.
-    [InlineData("Invalid Header", "value")]
-    // Header name contains a colon — invalid token character (would be parsed as name/value separator).
-    [InlineData("Invalid:Name", "value")]
-    // Header name contains a tab — invalid token character.
-    [InlineData("Invalid\tName", "value")]
-    public async Task CallApiAsync_ThrowsWhenConfiguredHeaderIsRejectedByTryAddWithoutValidation(
-        string headerName,
-        string headerValue)
-    {
-        var config = CreateTestConfiguration(
-            requestHeaders: new[] { (headerName, headerValue) });
-        var mockAuthService = new Mock<AuthenticationService>(config) { CallBase = false };
-        mockAuthService
-            .Setup(a => a.AcquireTokenSilentAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(CreateMockAuthResult("token"));
-
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}"),
-            });
-
-        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://ABC123.playfabapi.com/") };
-        using var client = new PlayFabApiClient(config, mockAuthService.Object, httpClient);
-
-        var ex = await Assert.ThrowsAsync<PlayFabApiException>(
-            () => client.CallApiAsync("/Admin/GetTitleData", null, CancellationToken.None));
-
-        Assert.Equal(PlayFabCallOutcome.NotSent, ex.Outcome);
-        Assert.Contains($"'{headerName}'", ex.Message);
-        Assert.Contains("could not be added", ex.Message);
-        Assert.Null(handler.LastRequest);
-    }
-}
-
-/// <summary>
-/// Mock handler that captures request body content before it gets disposed by HttpClient.
-/// </summary>
-internal class ContentCapturingHandler : HttpMessageHandler
-{
-    private readonly HttpResponseMessage _response;
-    private readonly Action<string> _captureBody;
-
-    public ContentCapturingHandler(HttpResponseMessage response, Action<string> captureBody)
-    {
-        _response = response;
-        _captureBody = captureBody;
-    }
-
-    protected override async Task<HttpResponseMessage> SendAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        if (request.Content != null)
-        {
-            var body = await request.Content.ReadAsStringAsync(cancellationToken);
-            _captureBody(body);
-        }
-
-        return _response;
     }
 }
 

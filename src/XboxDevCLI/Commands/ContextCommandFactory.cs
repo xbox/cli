@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
+using System.CommandLine.Completions;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
@@ -52,7 +53,7 @@ internal static class ContextCommandFactory
         "keys",
         [
             new TableColumn("KEY", "name", 24),
-            new TableColumn("USED BY", "usedBy", 72),
+            new TableColumn("USED BY", "usedBy", 88),
         ]);
 
     /// <summary>The table <c>context profile list</c> and <c>delete</c> render: one row per profile.</summary>
@@ -312,6 +313,11 @@ internal static class ContextCommandFactory
         {
             Description = "Key to save. 'xbox context key list' lists them.",
         };
+        // Only the key completes: the value isn't one of the keys.
+        keyArgument.CompletionSources.Add(context =>
+            context.ParseResult.GetResult(keyArgument) is { Tokens: [var key] } && key.Value != context.WordToComplete
+                ? []
+                : CompleteKeys(context));
         var valueArgument = new Argument<string>("value")
         {
             Description = "Value to save.",
@@ -396,6 +402,7 @@ internal static class ContextCommandFactory
             Description = "Keys to remove. 'xbox context key list' lists them.",
             Arity = ArgumentArity.ZeroOrMore,
         };
+        keysArgument.CompletionSources.Add(CompleteKeys);
         var allOption = new Option<bool>("--all")
         {
             Description =
@@ -498,6 +505,9 @@ internal static class ContextCommandFactory
         ContextResolver.FindAll(parseResult.RootCommandResult.Command)
             .OrderBy(use => ContextResolver.GetKey(use.Option), StringComparer.Ordinal)
             .ToLookup(use => ContextResolver.GetKey(use.Option));
+
+    private static IEnumerable<CompletionItem> CompleteKeys(CompletionContext context) =>
+        GetKeys(context.ParseResult).Select(key => new CompletionItem(key.Key));
 
     /// <summary>
     /// The endpoint a key's saved value belongs to: the PlayFab endpoint, or the XboxPartner

@@ -42,45 +42,6 @@ internal static class CloudScriptClassicCommandFactory
         return command;
     }
 
-    internal static (string apiPath, GetCloudScriptRevisionRequest request) BuildGetRevisionCall(
-        int? version, int? revision)
-    {
-        var request = new GetCloudScriptRevisionRequest
-        {
-            Version = version,
-            Revision = revision,
-        };
-
-        return (GetCloudScriptRevisionPath, request);
-    }
-
-    internal static (string apiPath, SetPublishedRevisionRequest request) BuildPublishCall(
-        int version, int revision)
-    {
-        var request = new SetPublishedRevisionRequest
-        {
-            Version = version,
-            Revision = revision,
-        };
-
-        return (SetPublishedRevisionPath, request);
-    }
-
-    internal static (string apiPath, UpdateCloudScriptRequest request) BuildUpdateCall(
-        string fileName, string fileContents, bool publish)
-    {
-        var request = new UpdateCloudScriptRequest
-        {
-            Files = new List<CloudScriptFile>
-            {
-                new() { Filename = fileName, FileContents = fileContents },
-            },
-            Publish = publish,
-        };
-
-        return (UpdateCloudScriptPath, request);
-    }
-
     private static Command CreateGetRevisionCommand()
     {
         var versionOption = new Option<int?>("--version")
@@ -109,7 +70,12 @@ internal static class CloudScriptClassicCommandFactory
                     cancellationToken)));
 
         return command.WithMetadata(new CommandMetadata(
-            ApiPaths: [GetCloudScriptRevisionPath]));
+            ApiPaths: [GetCloudScriptRevisionPath],
+            Examples:
+            [
+                "xbox playfab cloudscript classic revision get",
+                "xbox playfab cloudscript classic revision get --version 1 --revision 2",
+            ]));
     }
 
     /// <summary>
@@ -126,8 +92,13 @@ internal static class CloudScriptClassicCommandFactory
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
-        var (apiPath, request) = BuildGetRevisionCall(version, revision);
-        return RunAsync(client, apiPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
+        var request = new GetCloudScriptRevisionRequest
+        {
+            Version = version,
+            Revision = revision,
+        };
+
+        return RunAsync(client, GetCloudScriptRevisionPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
     }
 
     private static Command CreateListVersionsCommand()
@@ -140,6 +111,10 @@ internal static class CloudScriptClassicCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [GetCloudScriptVersionsPath],
+            Examples:
+            [
+                "xbox playfab cloudscript classic version list --output table",
+            ],
             Table: new TableView(
                 nameof(GetCloudScriptVersionsResult.Versions),
                 [
@@ -196,6 +171,11 @@ internal static class CloudScriptClassicCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [UpdateCloudScriptPath],
+            Examples:
+            [
+                "xbox playfab cloudscript classic revision create --file main.js --playfab-title-id ABC123",
+                "xbox playfab cloudscript classic revision create --file main.js --publish --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "The new revision is created unpublished unless --publish is passed, which makes " +
                 "it live for players immediately."));
@@ -222,10 +202,16 @@ internal static class CloudScriptClassicCommandFactory
         }
 
         var fileContents = await File.ReadAllTextAsync(filePath, cancellationToken);
-        var fileName = Path.GetFileName(filePath);
+        var request = new UpdateCloudScriptRequest
+        {
+            Files = new List<CloudScriptFile>
+            {
+                new() { Filename = Path.GetFileName(filePath), FileContents = fileContents },
+            },
+            Publish = publish,
+        };
 
-        var (apiPath, request) = BuildUpdateCall(fileName, fileContents, publish);
-        return await RunAsync(client, apiPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
+        return await RunAsync(client, UpdateCloudScriptPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
     }
 
     private static Command CreatePublishCommand()
@@ -259,6 +245,10 @@ internal static class CloudScriptClassicCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [SetPublishedRevisionPath],
+            Examples:
+            [
+                "xbox playfab cloudscript classic revision publish --version 1 --revision 3 --playfab-title-id ABC123",
+            ],
             SafetyDetails:
                 "The named revision becomes live for players as soon as the call succeeds."));
     }
@@ -277,7 +267,12 @@ internal static class CloudScriptClassicCommandFactory
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
-        var (apiPath, request) = BuildPublishCall(version, revision);
-        return RunAsync(client, apiPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
+        var request = new SetPublishedRevisionRequest
+        {
+            Version = version,
+            Revision = revision,
+        };
+
+        return RunAsync(client, SetPublishedRevisionPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
     }
 }

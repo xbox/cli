@@ -23,7 +23,7 @@ describes.
 | Command | Same as | Description |
 | --- | --- | --- |
 | `pc sandbox get` | `XblPCSandbox /get` | Get the sandbox this PC uses. |
-| `pc sandbox set <sandbox-id>` | `XblPCSandbox /set <sandbox-id>`, or `/retail` | Switch this PC to a sandbox, or back to `RETAIL`. |
+| `pc sandbox set <sandbox-id>` | `XblPCSandbox /set <sandbox-id>`, or `/retail` | Switch this PC to a sandbox, by ID or [number](#sandbox-numbers), or back to `RETAIL`. |
 | `pc sandbox launch-apps` | `XblPCSandbox /launchApps` | Close and reopen the Microsoft Store and XBOX app in this PC's sandbox. |
 
 For the tool's `/feedback` command, run `XblPCSandbox /feedback` directly.
@@ -45,6 +45,17 @@ which fixes sign-in that still uses the old sandbox. If that doesn't help, resta
 
 Switch to `RETAIL` before you update the XBOX app or Gaming Services from the Microsoft Store.
 
+### Sandbox numbers
+
+`set` also accepts a [sandbox number](sandbox.md#sandbox-numbers), such as `2`, and switches to
+that sandbox of your seller. A number needs you to be signed in and a seller from `--seller-id` or
+[context](context.md); a sandbox ID needs neither. The command names the full ID before it
+switches.
+
+```bash
+xbox pc sandbox set 2 --seller-id 1234567 --confirm
+```
+
 ## Installing the tool
 
 `XblPCSandbox.exe` ships with the XBOX Game Development Kit (GDK), and in `XboxLiveTools.zip` on
@@ -62,6 +73,7 @@ The CLI looks for the tool in this order:
 | --- | --- | --- |
 | `--confirm`, `--yes`, `-y` | `set` | Switch without the confirmation prompt. Required outside an interactive terminal. |
 | `--no-apps` | `set` | Don't reopen the Microsoft Store and XBOX app, like the tool's `/noApps`. Run `launch-apps` later to reopen them. |
+| `--seller-id <id>` | `set` | The seller whose sandbox a [sandbox number](#sandbox-numbers) selects. Not used with a sandbox ID. |
 | `--output <format>` | all | `json` (default), `json-compact`, or `table`. |
 
 ## Output
@@ -78,6 +90,7 @@ The CLI looks for the tool in this order:
 | Gaming Services is missing or not working | The tool's output names the cause, and the error links to the Gaming Services Repair Tool. |
 | The switch didn't take effect | The tool reported success, but the PC uses another sandbox. Run the switch again, then restart the PC if it still fails. |
 | The tool wasn't found | The error says where the CLI looked and how to install the tool. |
+| A sandbox number couldn't be resolved | The PC isn't changed. Check your sign-in and `--seller-id`, or pass the full sandbox ID. |
 | You pressed Ctrl+C | The CLI stops the tool. If you'd accepted the UAC prompt, the switch might still finish; check with `xbox pc sandbox get`. |
 
 The tool's errors link to [Troubleshooting sandboxes](https://aka.ms/XboxLiveSandboxHelp) and

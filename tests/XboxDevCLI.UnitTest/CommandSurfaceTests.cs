@@ -73,6 +73,8 @@ public class CommandSurfaceTests
     [InlineData("xbl schema download")]
     [InlineData("xbl config list")]
     [InlineData("xbl config status")]
+    [InlineData("xbl config diff")]
+    [InlineData("xbl config history")]
     [InlineData("xbl config download")]
     [InlineData("xbl config save")]
     [InlineData("xbl config publish")]
@@ -91,56 +93,9 @@ public class CommandSurfaceTests
     /// stdout that a script could mistake for a successful result.
     /// </summary>
     [Theory]
-    [InlineData("playfab", "raw-api", "/Admin/GetTitleData")]
-    [InlineData("playfab", "list-apis")]
-    [InlineData("playfab", "describe-api", "/Admin/GetTitleData")]
     [InlineData("product", "list")]
-    [InlineData("playfab", "describe-type", "CatalogItem")]
-    [InlineData("playfab", "type", "describe", "EntityKey")]
-    [InlineData("playfab", "type")]
-    [InlineData("playfab", "files", "list")]
-    [InlineData("playfab", "groups", "get")]
-    [InlineData("playfab", "api-policy", "show")]
-    [InlineData("playfab", "player", "get-account")]
-    [InlineData("playfab", "files")]
-    [InlineData("playfab", "groups")]
-    [InlineData("playfab", "groups", "membership", "list-opportunities")]
-    [InlineData("playfab", "cloudscript", "functions")]
-    [InlineData("playfab", "cloudscript", "functions", "list")]
-    [InlineData("playfab", "cloudscript", "functions", "register-http")]
-    [InlineData("playfab", "cloudscript", "classic", "update")]
-    [InlineData("playfab", "cloudscript", "classic", "publish")]
-    [InlineData("playfab", "cloudscript", "classic", "get-revision")]
-    [InlineData("playfab", "cloudscript", "classic", "list-versions")]
-    [InlineData("playfab", "economy", "inventory", "collections")]
-    [InlineData("xbox-live")]
-    [InlineData("xbox-live", "schema", "get")]
-    [InlineData("xbl", "sandboxes", "list")]
-    [InlineData("xbl", "sandboxes")]
-    [InlineData("xbl", "schemas")]
-    [InlineData("xbl", "schemas", "get")]
-    [InlineData("xbl", "documents")]
-    [InlineData("xbl", "documents", "download")]
-    [InlineData("xbl", "documents", "commit")]
-    [InlineData("xbl", "document", "download")]
-    [InlineData("xbl", "document", "commit")]
-    [InlineData("xbl", "configuration", "list")]
-    [InlineData("xbl", "configuration", "get")]
-    [InlineData("xbl", "publish", "start")]
-    [InlineData("xbl", "publish", "status")]
+    [InlineData("playfab", "raw-api", "/Admin/GetTitleData")]
     [InlineData("xbl", "config", "commit")]
-    [InlineData("xbl", "config", "get")]
-    [InlineData("schema", "get")]
-    [InlineData("configuration", "document", "download")]
-    [InlineData("configuration", "document", "commit")]
-    [InlineData("product", "publish")]
-    [InlineData("product", "status")]
-    [InlineData("playfab", "economy", "inventory", "history")]
-    [InlineData("playfab", "economy", "inventory", "ops")]
-    [InlineData("playfab", "economy", "inventory", "status")]
-    [InlineData("playfab", "mps", "title", "get-status")]
-    [InlineData("seller", "set", "1234567")]
-    [InlineData("seller", "show")]
     public async Task RetiredPath_FailsClosed(params string[] args)
     {
         var result = await InvokeAsync(args);
@@ -259,45 +214,6 @@ public class CommandSurfaceTests
     /// URI both derive from the API path, so a rename that silently changed a path would be
     /// a correctness and a safety regression at once.
     /// </summary>
-    [Theory]
-    [InlineData("playfab mps title status", "/MultiplayerServer/GetTitleEnabledForMultiplayerServersStatus")]
-    [InlineData("playfab economy inventory list", "/Inventory/GetInventoryItems")]
-    [InlineData("playfab economy inventory add", "/Inventory/AddInventoryItems")]
-    [InlineData("playfab economy inventory collection list", "/Inventory/GetInventoryCollectionIds")]
-    [InlineData("playfab economy inventory transaction list", "/Inventory/GetTransactionHistory")]
-    [InlineData("playfab economy inventory operation execute", "/Inventory/ExecuteInventoryOperations")]
-    [InlineData("playfab economy inventory operation status", "/Inventory/GetInventoryOperationStatus")]
-    [InlineData("playfab experiment list", "/Experimentation/GetExperiments")]
-    [InlineData("playfab experiment scorecard get", "/Experimentation/GetLatestScorecard")]
-    [InlineData("playfab experiment treatment get", "/Experimentation/GetTreatmentAssignment")]
-    [InlineData("playfab experiment exclusion-group list", "/Experimentation/GetExclusionGroups")]
-    public void RenamedCommand_StillMapsToItsOriginalApiPath(string path, string expectedApiPath)
-    {
-        var actualApiPath = path switch
-        {
-            "playfab mps title status" => MpsCommandFactory.ApiCommands
-                .Single(command => command.Path.SequenceEqual(["title", "status"]))
-                .ApiPath,
-            "playfab economy inventory list" => EconomyCommandFactory.GetInventoryItemsPath,
-            "playfab economy inventory add" => EconomyCommandFactory.AddInventoryItemsPath,
-            "playfab economy inventory collection list" =>
-                EconomyCommandFactory.GetInventoryCollectionIdsPath,
-            "playfab economy inventory transaction list" =>
-                EconomyCommandFactory.GetTransactionHistoryPath,
-            "playfab economy inventory operation execute" =>
-                EconomyCommandFactory.ExecuteInventoryOperationsPath,
-            "playfab economy inventory operation status" =>
-                EconomyCommandFactory.GetInventoryOperationStatusPath,
-            "playfab experiment list" => ExperimentCommandFactory.GetExperimentsPath,
-            "playfab experiment scorecard get" => ExperimentCommandFactory.GetLatestScorecardPath,
-            "playfab experiment treatment get" => ExperimentCommandFactory.GetTreatmentAssignmentPath,
-            "playfab experiment exclusion-group list" => ExperimentCommandFactory.GetExclusionGroupsPath,
-            _ => throw new InvalidOperationException($"Unknown test path '{path}'."),
-        };
-
-        Assert.Equal(expectedApiPath, actualApiPath);
-    }
-
     [Theory]
     [InlineData("playfab mps title status", "/MultiplayerServer/GetTitleEnabledForMultiplayerServersStatus")]
     [InlineData("playfab economy inventory list", "/Inventory/GetInventoryItems")]
@@ -462,11 +378,7 @@ public class CommandSurfaceTests
         {
             foreach (var example in CommandMetadataRegistry.GetMetadata(command).Examples ?? [])
             {
-                var tokens = Regex.Matches(example, "'([^']*)'|\"([^\"]*)\"|(\\S+)")
-                    .Select(match => match.Groups[1].Success ? match.Groups[1].Value
-                        : match.Groups[2].Success ? match.Groups[2].Value
-                        : match.Groups[3].Value)
-                    .ToArray();
+                var tokens = SplitHelpExample(example);
                 Assert.Equal("xbox", tokens[0]);
 
                 var parsed = root.Parse(tokens[1..], Program.NoResponseFileConfig);
@@ -484,6 +396,44 @@ public class CommandSurfaceTests
 
         Assert.True(checkedExamples > 0);
     }
+
+    /// <summary>
+    /// Every command that runs something shows at least one example in Help, so a new command
+    /// can't ship without one.
+    /// </summary>
+    [Fact]
+    public void EveryLeafCommand_HasAHelpExample()
+    {
+        var root = Program.BuildRootCommand();
+        var missing = new List<string>();
+
+        void Walk(Command command, string path)
+        {
+            if (command.Subcommands.Count == 0
+                && CommandMetadataRegistry.GetMetadata(command).Examples is not { Count: > 0 })
+            {
+                missing.Add(path);
+            }
+
+            foreach (var subcommand in command.Subcommands)
+            {
+                Walk(subcommand, $"{path} {subcommand.Name}");
+            }
+        }
+
+        Walk(root, "xbox");
+        Assert.True(missing.Count == 0,
+            $"These commands have no Help example in CommandMetadata.Examples:{Environment.NewLine}"
+            + string.Join(Environment.NewLine, missing));
+    }
+
+    /// <summary>A Help example's words, split as a shell splits them, starting with xbox.</summary>
+    internal static string[] SplitHelpExample(string example) =>
+        Regex.Matches(example, "'([^']*)'|\"([^\"]*)\"|(\\S+)")
+            .Select(match => match.Groups[1].Success ? match.Groups[1].Value
+                : match.Groups[2].Success ? match.Groups[2].Value
+                : match.Groups[3].Value)
+            .ToArray();
 
     private static IEnumerable<Command> EnumerateCommands(Command command)
     {

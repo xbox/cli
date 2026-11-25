@@ -14,57 +14,6 @@ namespace XboxDevCLI.UnitTest;
 public class CloudScriptCommandTests
 {
     [Fact]
-    public void CloudScriptCommand_IsNamedCloudscript()
-    {
-        var command = CloudScriptCommandFactory.Create();
-        Assert.Equal("cloudscript", command.Name);
-    }
-
-    [Fact]
-    public void CloudScriptCommand_HasClassicAndFunctionGroups()
-    {
-        var command = CloudScriptCommandFactory.Create();
-
-        Assert.Equal(2, command.Subcommands.Count);
-        Assert.Contains(command.Subcommands, c => c.Name == "classic");
-        Assert.Contains(command.Subcommands, c => c.Name == "function");
-    }
-
-    [Fact]
-    public void ClassicGroup_HasExpectedSubcommands()
-    {
-        var command = CloudScriptClassicCommandFactory.Create();
-
-        Assert.Equal("classic", command.Name);
-        Assert.Equal(
-            ["revision", "version"],
-            command.Subcommands.Select(c => c.Name).Order(StringComparer.Ordinal));
-
-        var revision = command.Subcommands.First(c => c.Name == "revision");
-        Assert.Equal(
-            ["create", "get", "publish"],
-            revision.Subcommands.Select(c => c.Name).Order(StringComparer.Ordinal));
-
-        var version = command.Subcommands.First(c => c.Name == "version");
-        Assert.Equal(["list"], version.Subcommands.Select(c => c.Name));
-    }
-
-    [Fact]
-    public void FunctionGroup_HasExpectedSubcommands()
-    {
-        var command = CloudScriptFunctionCommandFactory.Create();
-
-        var expectedNames = new[] { "list", "register", "unregister" };
-
-        Assert.Equal("function", command.Name);
-        Assert.Equal(expectedNames.Length, command.Subcommands.Count);
-        foreach (var name in expectedNames)
-        {
-            Assert.Contains(command.Subcommands, c => c.Name == name);
-        }
-    }
-
-    [Fact]
     public void FunctionRegister_RequiresAnExplicitTriggerType()
     {
         var register = CloudScriptFunctionCommandFactory.Create()
@@ -86,76 +35,6 @@ public class CloudScriptCommandTests
             Assert.Contains("does not", description, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Azure Function itself", description, StringComparison.Ordinal);
         }
-    }
-
-    [Fact]
-    public void BuildGetRevisionCall_WithValues_MapsVersionAndRevision()
-    {
-        var (apiPath, request) = CloudScriptClassicCommandFactory.BuildGetRevisionCall(2, 3);
-
-        Assert.Equal("/Admin/GetCloudScriptRevision", apiPath);
-        Assert.Equal(2d, request.Version);
-        Assert.Equal(3d, request.Revision);
-    }
-
-    [Fact]
-    public void BuildGetRevisionCall_WithNulls_LeavesVersionAndRevisionNull()
-    {
-        var (apiPath, request) = CloudScriptClassicCommandFactory.BuildGetRevisionCall(null, null);
-
-        Assert.Equal("/Admin/GetCloudScriptRevision", apiPath);
-        Assert.Null(request.Version);
-        Assert.Null(request.Revision);
-    }
-
-    [Fact]
-    public void BuildPublishCall_MapsVersionAndRevision()
-    {
-        var (apiPath, request) = CloudScriptClassicCommandFactory.BuildPublishCall(1, 5);
-
-        Assert.Equal("/Admin/SetPublishedRevision", apiPath);
-        Assert.Equal(1d, request.Version);
-        Assert.Equal(5d, request.Revision);
-    }
-
-    [Theory]
-    [InlineData(null, "/CloudScript/ListFunctions")]
-    [InlineData("http", "/CloudScript/ListHttpFunctions")]
-    [InlineData("queued", "/CloudScript/ListQueuedFunctions")]
-    [InlineData("eventhub", "/CloudScript/ListEventHubFunctions")]
-    public void BuildListFunctionsApiPath_SelectsCorrectPath(string? type, string expected)
-    {
-        Assert.Equal(expected, CloudScriptFunctionCommandFactory.BuildListFunctionsApiPath(type));
-    }
-
-    [Fact]
-    public void BuildRegisterHttpFunctionCall_MapsFields()
-    {
-        var (apiPath, request) = CloudScriptFunctionCommandFactory.BuildRegisterHttpFunctionCall("Fn1", "https://fn.com/api");
-
-        Assert.Equal("/CloudScript/RegisterHttpFunction", apiPath);
-        Assert.Equal("Fn1", request.FunctionName);
-        Assert.Equal("https://fn.com/api", request.FunctionUrl);
-    }
-
-    [Fact]
-    public void BuildUnregisterFunctionCall_MapsName()
-    {
-        var (apiPath, request) = CloudScriptFunctionCommandFactory.BuildUnregisterFunctionCall("OldFunc");
-
-        Assert.Equal("/CloudScript/UnregisterFunction", apiPath);
-        Assert.Equal("OldFunc", request.FunctionName);
-    }
-
-    [Fact]
-    public void RegisterHttpFunctionRequest_SerializesWireFieldNames()
-    {
-        var (_, request) = CloudScriptFunctionCommandFactory.BuildRegisterHttpFunctionCall("MyFunc", "https://myfunc/api/run");
-
-        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(request));
-
-        Assert.Equal("MyFunc", doc.RootElement.GetProperty("FunctionName").GetString());
-        Assert.Equal("https://myfunc/api/run", doc.RootElement.GetProperty("FunctionUrl").GetString());
     }
 
     [Theory]
@@ -297,21 +176,6 @@ public class CloudScriptCommandTests
 
     private static MemoryStream Utf8Stream(string content) => new(Encoding.UTF8.GetBytes(content));
 
-    [Fact]
-    public void GetRevisionRequest_WithNulls_OmitsVersionAndRevisionWhenIgnoringNulls()
-    {
-        var (_, request) = CloudScriptClassicCommandFactory.BuildGetRevisionCall(null, null);
-        var options = new JsonSerializerOptions
-        {
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-        };
-
-        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(request, options));
-
-        Assert.False(doc.RootElement.TryGetProperty("Version", out _));
-        Assert.False(doc.RootElement.TryGetProperty("Revision", out _));
-    }
-
     #region Run Method Tests (SetAction lambda logic)
 
     private static HttpResponseMessage Ok(string json) =>
@@ -341,38 +205,18 @@ public class CloudScriptCommandTests
     }
 
     [Fact]
-    public async Task RunGetRevisionAsync_DataOutput_StripsEnvelope()
+    public async Task RunGetRevisionAsync_WithoutVersionOrRevision_SendsNeither()
     {
-        var responseJson = """{"code":200,"status":"OK","data":{"Version":5}}""";
-        using var client = PlayFabTestClient.Create(new MockHttpMessageHandler(Ok(responseJson)));
-        var stdout = new StringWriter();
+        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{}}"""));
+        using var client = PlayFabTestClient.Create(handler);
 
         var exit = await CloudScriptClassicCommandFactory.RunGetRevisionAsync(
-            client, null, null, new OutputOptions("json-compact", true), stdout, new StringWriter(),
+            client, null, null, OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None);
 
         Assert.Equal(0, exit);
-        var output = stdout.ToString().Trim();
-        Assert.Equal("""{"Version":5}""", output);
-    }
-
-    [Fact]
-    public async Task RunGetRevisionAsync_ApiError_ReturnsOneAndWritesStderr()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await CloudScriptClassicCommandFactory.RunGetRevisionAsync(
-            client, 1, 1, OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
+        using var body = JsonDocument.Parse(handler.LastRequestBody!);
+        Assert.Empty(body.RootElement.EnumerateObject());
     }
 
     // ----- classic version list -----
@@ -470,6 +314,7 @@ public class CloudScriptCommandTests
     [Theory]
     [InlineData(null, "/CloudScript/ListFunctions")]
     [InlineData("http", "/CloudScript/ListHttpFunctions")]
+    [InlineData("queued", "/CloudScript/ListQueuedFunctions")]
     [InlineData("eventhub", "/CloudScript/ListEventHubFunctions")]
     public async Task RunListAsync_SelectsEndpointByType(string? type, string expectedPath)
     {
@@ -524,23 +369,6 @@ public class CloudScriptCommandTests
         Assert.NotNull(handler.LastRequestBody);
         using var body = JsonDocument.Parse(handler.LastRequestBody!);
         Assert.Equal("OldFunc", body.RootElement.GetProperty("FunctionName").GetString());
-    }
-
-    [Fact]
-    public async Task RunUnregisterAsync_ApiError_ReturnsOneAndWritesStderr()
-    {
-        var errorJson = """{"code":404,"status":"NotFound","error":"NotFound","errorCode":1,"errorMessage":"missing"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stderr = new StringWriter();
-
-        var exit = await CloudScriptFunctionCommandFactory.RunUnregisterAsync(
-            client, "Ghost", OutputOptions.Json, new StringWriter(), stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.NotEqual(string.Empty, stderr.ToString());
     }
 
     #endregion

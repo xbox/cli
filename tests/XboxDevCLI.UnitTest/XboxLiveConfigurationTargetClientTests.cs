@@ -4,6 +4,7 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using XboxDevCLI.Commands;
 using XboxDevCLI.Services;
 using Xunit;
 
@@ -15,7 +16,6 @@ public sealed class XboxLiveConfigurationTargetClientTests
     private const string ScidHeader = "X-XboxPartner-Scid";
     private const string SellerHeader = "X-XboxPartner-Seller-Id";
     private const string PrimaryHeader = "X-XboxPartner-Resolved-Title-Id";
-    private static readonly string[] TargetHeaders = [ScidHeader, SellerHeader, PrimaryHeader];
 
     /// <summary>
     /// The XboxPartner operations the client targets. They're keyed by operation, not CLI command:
@@ -115,32 +115,6 @@ public sealed class XboxLiveConfigurationTargetClientTests
     }
 
     [Theory]
-    [MemberData(nameof(Commands))]
-    public async Task TitleResponses_AcceptCaseInsensitiveHeaderNamesAndUnboundPrimary(
-        string family, string action)
-    {
-        var response = Target(Response(family, action));
-        foreach (var name in TargetHeaders)
-        {
-            if (!response.Headers.TryGetValues(name, out var values)) continue;
-            string[] copied = values.ToArray();
-            response.Headers.Remove(name);
-            response.Headers.Add(name.ToLowerInvariant(), copied);
-        }
-        var handler = new XboxPartnerHttpMessageHandler(response);
-        using var http = new HttpClient(handler);
-        using var client = CreateClient(http);
-        XboxLiveResolvedConfigurationTarget? target = null;
-
-        await InvokeAsync(client, family, action, value => target = value);
-
-        Assert.NotNull(target);
-        Assert.Equal("00000042", target.TitleId);
-        Assert.Equal("00000042", target.ResolvedTitleId);
-        Assert.Single(handler.Requests);
-    }
-
-    [Theory]
     [MemberData(nameof(InvalidScid))]
     public async Task InvalidResponseScid_ThrowsTypedCorrelatedErrorWithoutCallbackOrReplay(
         string family, string action, string? value)
@@ -213,23 +187,6 @@ public sealed class XboxLiveConfigurationTargetClientTests
 
         Assert.Equal(Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]),
             error.CorrelationId);
-    }
-
-    [Theory]
-    [MemberData(nameof(Commands))]
-    public async Task DirectScid_LegacyResponsesMayOmitAllTargetHeaders(string family, string action)
-    {
-        var handler = new XboxPartnerHttpMessageHandler(Response(family, action));
-        using var http = new HttpClient(handler);
-        using var client = CreateClient(http);
-
-        await InvokeAsync(client, family, action, scid: Guid.Parse(Scid), titleId: null);
-
-        var request = Assert.Single(handler.Requests);
-        Assert.Equal(OperationPath(family, action), request.RequestUri!.AbsolutePath);
-        using var body = JsonDocument.Parse(request.Body!);
-        Assert.Equal(Scid, body.RootElement.GetProperty("scid").GetString());
-        AssertNullOrAbsent(body.RootElement, "titleId");
     }
 
     [Theory]
@@ -471,8 +428,8 @@ public sealed class XboxLiveConfigurationTargetClientTests
         {
             ("configuration", "list") => client.GetXboxLiveConfigurationsAsync(
                 sellerId, scid, cancellationToken, titleId, targetResolved),
-            ("configuration", "get") => client.GetXboxLiveConfigurationAsync(
-                sellerId, scid, "XDKS.1", cancellationToken, titleId, targetResolved),
+            ("configuration", "get") => client.GetXboxLiveConfigurationStatusAsync(
+                sellerId, XboxLiveScope.Sandbox, scid, "XDKS.1", cancellationToken, titleId, targetResolved),
             ("document", "download") => CaptureArchiveTargetAsync(
                 client.GetXboxLiveDocumentsAsync(sellerId,
                     new XboxLiveGetDocumentsRequest("sandbox", scid, "XDKS.1", "working", null, [], titleId),

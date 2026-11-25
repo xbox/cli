@@ -337,13 +337,15 @@ internal static partial class TestAccountCommandFactory
                 break;
             case XboxPartnerResponseException response:
                 XboxPartnerCommandSupport.WriteCorrelationId(response.CorrelationId, stderr);
-                stderr.WriteLine($"Request failed: {response.Message}");
+                stderr.WriteLine($"Request failed: {TerminalText.Message(response.Message)}");
                 break;
             case OperationCanceledException:
+                XboxPartnerCommandSupport.WriteCorrelationId(exception, stderr);
                 stderr.WriteLine("Request timed out.");
                 break;
             default:
-                stderr.WriteLine($"Request failed: {exception.Message}");
+                XboxPartnerCommandSupport.WriteCorrelationId(exception, stderr);
+                stderr.WriteLine($"Request failed: {TerminalText.Message(exception.Message)}");
                 break;
         }
     }

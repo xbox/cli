@@ -35,7 +35,6 @@ namespace XboxDevCLI.PlayFab.Commands;
 /// </summary>
 internal static class ApiPolicyCommandFactory
 {
-    private const string DefaultPolicyName = "ApiPolicy";
     private const string GetPolicyPath = "/Admin/GetPolicy";
     private const string UpdatePolicyPath = "/Admin/UpdatePolicy";
 
@@ -80,45 +79,36 @@ internal static class ApiPolicyCommandFactory
         return apiPolicy;
     }
 
-    private static Option<string?> PolicyNameOption() =>
-        OptionalOption(
-            "--policy-name",
-            "Name of the policy to operate on. Defaults to 'ApiPolicy' when omitted.");
-
     #region show
 
     private static Command CreateShowCommand()
     {
-        var policyNameOption = PolicyNameOption();
-
-        var command = new Command("get", "Get a title's API access policy (POST /Admin/GetPolicy).")
-        {
-            policyNameOption,
-        };
+        var command = new Command("get", "Get a title's API access policy (POST /Admin/GetPolicy).");
 
         command.SetAction((ParseResult parseResult, CancellationToken cancellationToken) =>
             WithClientAsync(parseResult, cancellationToken, (client, output, stdout, stderr, cancellationToken) =>
-                RunShowAsync(
-                    client,
-                    parseResult.GetValue(policyNameOption),
-                    output, stdout, stderr,
-                    cancellationToken)));
+                RunShowAsync(client, output, stdout, stderr, cancellationToken)));
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [GetPolicyPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [GetPolicyPath],
+            Examples:
+            [
+                "xbox playfab api-policy get",
+            ]));
     }
 
     /// <summary>
-    /// Action for <c>playfab api-policy get</c>: reads the named policy (default <c>ApiPolicy</c>)
-    /// via <c>/Admin/GetPolicy</c> and writes the formatted response.
+    /// Action for <c>playfab api-policy get</c>: reads the title's <c>ApiPolicy</c> via
+    /// <c>/Admin/GetPolicy</c> and writes the formatted response.
     /// </summary>
     internal static async Task<int> RunShowAsync(
-        PlayFabApiClient client, string? policyName,
+        PlayFabApiClient client,
         OutputOptions output, TextWriter stdout, TextWriter stderr,
         CancellationToken cancellationToken)
     {
         var request = new GetPolicyRequest
         {
-            PolicyName = ResolvePolicyName(policyName),
+            PolicyName = "ApiPolicy",
         };
 
         return await RunAsync(client, GetPolicyPath, request, output, stdout, stderr, cancellationToken: cancellationToken);
@@ -130,7 +120,6 @@ internal static class ApiPolicyCommandFactory
 
     private static Command CreateSetCommand()
     {
-        var policyNameOption = PolicyNameOption();
         var statementsOption = OptionalOption(
             "--statements",
             "Inline JSON array of permission statements. Mutually exclusive with --statements-file; exactly one is required.");
@@ -149,7 +138,6 @@ internal static class ApiPolicyCommandFactory
 
         var command = new Command("set", "Update a title's API access policy (POST /Admin/UpdatePolicy).")
         {
-            policyNameOption,
             statementsOption,
             statementsFileOption,
             policyVersionOption,
@@ -160,7 +148,6 @@ internal static class ApiPolicyCommandFactory
             WithClientAsync(parseResult, cancellationToken, (client, output, stdout, stderr, cancellationToken) =>
                 RunSetAsync(
                     client,
-                    parseResult.GetValue(policyNameOption),
                     parseResult.GetValue(statementsOption),
                     parseResult.GetValue(statementsFileOption),
                     parseResult.GetValue(policyVersionOption),
@@ -171,6 +158,11 @@ internal static class ApiPolicyCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [UpdatePolicyPath],
+            Examples:
+            [
+                "xbox playfab api-policy set --policy-version 3 --statements-file policy.json --playfab-title-id ABC123",
+                "xbox playfab api-policy set --policy-version 3 --statements-file policy.json --overwrite --playfab-title-id ABC123 --confirm",
+            ],
             SafetyDetails:
                 "UpdatePolicy is not a Delete operation, so the runtime gate does not cover it; " +
                 "--overwrite discards every statement it does not restate and requires --confirm " +
@@ -187,7 +179,7 @@ internal static class ApiPolicyCommandFactory
     /// when <paramref name="overwrite"/> is requested without <paramref name="confirmed"/>.
     /// </summary>
     internal static async Task<int> RunSetAsync(
-        PlayFabApiClient client, string? policyName, string? statements, string? statementsFile,
+        PlayFabApiClient client, string? statements, string? statementsFile,
         double policyVersion, bool overwrite,
         OutputOptions output, TextWriter stdout, TextWriter stderr,
         CancellationToken cancellationToken,
@@ -251,7 +243,7 @@ internal static class ApiPolicyCommandFactory
 
         var request = new UpdatePolicyRequest
         {
-            PolicyName = ResolvePolicyName(policyName),
+            PolicyName = "ApiPolicy",
             PolicyVersion = policyVersion,
             OverwritePolicy = overwrite,
             Statements = parsedStatements,
@@ -263,14 +255,6 @@ internal static class ApiPolicyCommandFactory
     #endregion
 
     #region Helpers
-
-    /// <summary>
-    /// Normalizes the <c>--policy-name</c> value: blank/absent falls back to <c>ApiPolicy</c>
-    /// (the policy titles use in practice); otherwise the trimmed value is forwarded as supplied,
-    /// so the CLI does not have to be updated if PlayFab adds further named policies.
-    /// </summary>
-    internal static string ResolvePolicyName(string? policyName) =>
-        string.IsNullOrWhiteSpace(policyName) ? DefaultPolicyName : policyName.Trim();
 
     /// <summary>
     /// Parses the policy-statements JSON into a list of <see cref="PermissionStatement"/>. The input

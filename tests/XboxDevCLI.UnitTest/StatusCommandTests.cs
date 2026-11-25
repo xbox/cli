@@ -107,26 +107,18 @@ public class StatusCommandTests
     }
 
     /// <summary>
-    /// A configuration or sign-in state that can't be read isn't reported as signed out: status
-    /// fails with the reason on stderr and nothing on stdout, as JSON when <c>--output</c> asks for it.
+    /// A sign-in state that can't be read isn't reported as signed out: status fails with the
+    /// reason on stderr and nothing on stdout, as JSON when <c>--output</c> asks for it.
     /// </summary>
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Status_WhenConfigurationOrSignInCannotBeRead(bool configurationFails)
+    [Fact]
+    public async Task Status_WhenSignInCannotBeRead()
     {
-        using var unreadable = configurationFails ? TestSettings.UseUnreadable() : null;
-        string[] args = [];
-        Func<ParseResult, AuthenticationService> authFactory = parseResult =>
-        {
-            _ = Program.LoadConfiguration(parseResult);
-            throw new InvalidOperationException("The token cache can't be read.");
-        };
+        const string expected = "The token cache can't be read.";
+        Func<ParseResult, AuthenticationService> authFactory = _ => throw new InvalidOperationException(expected);
 
-        var json = await RunStatusAsync(authFactory, [.. args, "--output", "json-compact"]);
-        var text = await RunStatusAsync(authFactory, args);
+        var json = await RunStatusAsync(authFactory, "--output", "json-compact");
+        var text = await RunStatusAsync(authFactory);
 
-        string expected = configurationFails ? TestSettings.UnreadableMessage : "The token cache can't be read.";
         Assert.Equal(1, json.ExitCode);
         Assert.Empty(json.Stdout);
         using var error = JsonDocument.Parse(json.Stderr);
@@ -137,58 +129,6 @@ public class StatusCommandTests
         Assert.Empty(text.Stdout);
         Assert.StartsWith("Failed to retrieve status: ", text.Stderr, StringComparison.Ordinal);
         Assert.Contains(expected, text.Stderr, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// A settings file an earlier release read, still beside the executable, doesn't break a
-    /// failure's JSON on stderr; text output still notes it before the error.
-    /// </summary>
-    [Fact]
-    public async Task Status_WithARetiredSettingsFile_FailureIsStillJson()
-    {
-        var directory = Directory.CreateTempSubdirectory("xbox-install-");
-        try
-        {
-            File.WriteAllText(Path.Combine(directory.FullName, "appsettings.json"), "{}");
-            using var install = LoadedConfiguration.UseInstallDirectory(directory.FullName);
-            Func<ParseResult, AuthenticationService> authFactory =
-                _ => throw new InvalidOperationException("The token cache can't be read.");
-
-            var json = await RunStatusAsync(authFactory, "--output", "json-compact");
-            var text = await RunStatusAsync(authFactory);
-
-            Assert.Equal(1, json.ExitCode);
-            Assert.Empty(json.Stdout);
-            using var error = JsonDocument.Parse(json.Stderr);
-            Assert.False(error.RootElement.GetProperty("signedIn").GetBoolean());
-            Assert.Equal(1, text.ExitCode);
-            Assert.StartsWith("Note: ", text.Stderr, StringComparison.Ordinal);
-            Assert.Contains("Failed to retrieve status: The token cache can't be read.", text.Stderr, StringComparison.Ordinal);
-        }
-        finally
-        {
-            directory.Delete(recursive: true);
-        }
-    }
-
-    /// <summary>
-    /// Built-in settings that aren't valid JSON fail the whole invocation with exit code 1 and the
-    /// command's JSON error, before the token cache is read.
-    /// </summary>
-    [Theory]
-    [InlineData("{ not json")]
-    [InlineData("[]")]
-    public async Task Status_WithInvalidBuiltInJson_ReportsAJsonError(string settings)
-    {
-        using var invalid = TestSettings.Use(settings);
-
-        var result = await RunStatusAsync("--output", "json-compact");
-
-        Assert.Equal(1, result.ExitCode);
-        Assert.Empty(result.Stdout);
-        using var error = JsonDocument.Parse(result.Stderr);
-        Assert.False(error.RootElement.GetProperty("signedIn").GetBoolean());
-        Assert.Equal(LoadedConfiguration.InvalidBuiltInSettingsMessage, error.RootElement.GetProperty("error").GetString());
     }
 
     [Theory]

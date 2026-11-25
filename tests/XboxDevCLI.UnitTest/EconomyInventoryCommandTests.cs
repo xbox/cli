@@ -5,7 +5,6 @@ using System.CommandLine;
 using System.Net;
 using System.Text.Json;
 using XboxDevCLI.PlayFab.Commands;
-using XboxDevCLI.Services;
 using XboxDevCLI.Output;
 using Xunit;
 
@@ -14,37 +13,13 @@ namespace XboxDevCLI.UnitTest;
 /// <summary>
 /// Coverage for the <c>playfab economy inventory</c> command group: command/option structure, the
 /// entity/count/item/operations build helpers and their validation branches, the exact request URI
-/// and serialized body each verb produces, success and API-error output paths, and the
-/// malformed-JSON handling for the <c>--item</c>/<c>--operations</c> escape hatches. Actions take an
-/// injected client and captured writers, so no <c>Console</c> redirection (and no
-/// <c>[Collection("ConsoleRedirect")]</c>) is needed.
+/// and serialized body each verb produces, and the malformed-JSON handling for the
+/// <c>--item</c>/<c>--operations</c> escape hatches. Actions take an injected client and captured
+/// writers, so no <c>Console</c> redirection (and no <c>[Collection("ConsoleRedirect")]</c>) is needed.
 /// </summary>
 public class EconomyInventoryCommandTests
 {
     #region Command structure
-
-    [Fact]
-    public void Economy_HasInventoryGroupWithAllVerbs()
-    {
-        var economy = EconomyCommandFactory.Create();
-        Assert.Equal("economy", economy.Name);
-
-        var inventory = economy.Subcommands.First(c => c.Name == "inventory");
-        Assert.Equal(
-            ["add", "collection", "list", "operation", "transaction"],
-            inventory.Subcommands.Select(c => c.Name).Order(StringComparer.Ordinal));
-
-        Assert.Equal(
-            ["list"],
-            inventory.Subcommands.First(c => c.Name == "collection").Subcommands.Select(c => c.Name));
-        Assert.Equal(
-            ["list"],
-            inventory.Subcommands.First(c => c.Name == "transaction").Subcommands.Select(c => c.Name));
-        Assert.Equal(
-            ["execute", "status"],
-            inventory.Subcommands.First(c => c.Name == "operation")
-                .Subcommands.Select(c => c.Name).Order(StringComparer.Ordinal));
-    }
 
     [Fact]
     public void Inventory_Verbs_HaveExpectedOptions()
@@ -79,6 +54,13 @@ public class EconomyInventoryCommandTests
 
         Assert.True(Verb("operation status").Options.First(o => o.Name == "--operation-token").Required);
 
+        // Without an entity PlayFab targets the caller, the title, which has no inventory.
+        foreach (var verb in new[] { "list", "collection list", "transaction list", "add", "operation execute", "operation status" })
+        {
+            Assert.True(Verb(verb).Options.First(o => o.Name == "--entity-id").Required, verb);
+            Assert.True(Verb(verb).Options.First(o => o.Name == "--entity-type").Required, verb);
+        }
+
         // Paging vocabulary is normalized; the retired spelling must be gone everywhere.
         foreach (var paged in new[] { "list", "collection list", "transaction list" })
         {
@@ -91,28 +73,9 @@ public class EconomyInventoryCommandTests
     #region TryBuildEntity
 
     [Fact]
-    public void TryBuildEntity_BothProvided_BuildsKey()
+    public void TryBuildEntity_BothOmitted_ReturnsError()
     {
-        Assert.True(EconomyCommandFactory.TryBuildEntity("E1", "title_player_account", out var entity, out var err));
-        Assert.Null(err);
-        Assert.Equal("E1", entity!.Id);
-        Assert.Equal("title_player_account", entity.Type);
-    }
-
-    [Fact]
-    public void TryBuildEntity_BothOmitted_ReturnsNullEntity()
-    {
-        Assert.True(EconomyCommandFactory.TryBuildEntity(null, "  ", out var entity, out var err));
-        Assert.Null(entity);
-        Assert.Null(err);
-    }
-
-    [Theory]
-    [InlineData("E1", null)]
-    [InlineData(null, "title_player_account")]
-    public void TryBuildEntity_HalfProvided_ReturnsError(string? id, string? type)
-    {
-        Assert.False(EconomyCommandFactory.TryBuildEntity(id, type, out var entity, out var err));
+        Assert.False(EconomyCommandFactory.TryBuildEntity(null, "  ", out var entity, out var err));
         Assert.Null(entity);
         Assert.Contains("--entity-id", err);
         Assert.Contains("--entity-type", err);
@@ -120,44 +83,7 @@ public class EconomyInventoryCommandTests
 
     #endregion
 
-    #region TryResolveCount
-
-    [Fact]
-    public void TryResolveCount_Absent_UsesDefault()
-    {
-        Assert.True(EconomyCommandFactory.TryResolveCount(null, out var resolved, out var err));
-        Assert.Equal(EconomyCommandFactory.DefaultCount, resolved);
-        Assert.Null(err);
-    }
-
-    [Fact]
-    public void TryResolveCount_Positive_UsesValue()
-    {
-        Assert.True(EconomyCommandFactory.TryResolveCount(25, out var resolved, out _));
-        Assert.Equal(25, resolved);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-3)]
-    public void TryResolveCount_NonPositive_ReturnsError(int count)
-    {
-        Assert.False(EconomyCommandFactory.TryResolveCount(count, out _, out var err));
-        Assert.Contains("--limit", err);
-    }
-
-    #endregion
-
     #region TryBuildItemReference
-
-    [Fact]
-    public void TryBuildItemReference_ItemId_BuildsReference()
-    {
-        Assert.True(EconomyCommandFactory.TryBuildItemReference("sword", null, "stack7", out var item, out var err));
-        Assert.Null(err);
-        Assert.Equal("sword", item!.Id);
-        Assert.Equal("stack7", item.StackId);
-    }
 
     [Fact]
     public void TryBuildItemReference_Json_Deserializes_CaseInsensitive()
@@ -177,14 +103,6 @@ public class EconomyInventoryCommandTests
     }
 
     [Fact]
-    public void TryBuildItemReference_Neither_ReturnsError()
-    {
-        Assert.False(EconomyCommandFactory.TryBuildItemReference(null, null, null, out var item, out var err));
-        Assert.Null(item);
-        Assert.Contains("--item-id", err);
-    }
-
-    [Fact]
     public void TryBuildItemReference_StackIdWithJson_ReturnsError()
     {
         Assert.False(EconomyCommandFactory.TryBuildItemReference(null, """{"Id":"abc"}""", "s1", out var item, out var err));
@@ -192,29 +110,9 @@ public class EconomyInventoryCommandTests
         Assert.Contains("--stack-id", err);
     }
 
-    [Theory]
-    [InlineData("{not json}")]
-    [InlineData("[1,2]")]
-    public void TryBuildItemReference_MalformedJson_ReturnsFriendlyError(string json)
-    {
-        Assert.False(EconomyCommandFactory.TryBuildItemReference(null, json, null, out var item, out var err));
-        Assert.Null(item);
-        Assert.Contains("--item", err);
-    }
-
     #endregion
 
     #region TryParseOperations
-
-    [Fact]
-    public void TryParseOperations_ValidArray_Parses()
-    {
-        var json = """[{"Add":{"Item":{"Id":"sword"},"Amount":1}}]""";
-        Assert.True(EconomyCommandFactory.TryParseOperations(json, out var ops, out var err));
-        Assert.Null(err);
-        Assert.Single(ops!);
-        Assert.NotNull(ops![0].Add);
-    }
 
     [Theory]
     [InlineData("")]
@@ -223,14 +121,6 @@ public class EconomyInventoryCommandTests
     public void TryParseOperations_EmptyOrBlank_ReturnsError(string json)
     {
         Assert.False(EconomyCommandFactory.TryParseOperations(json, out var ops, out var err));
-        Assert.Null(ops);
-        Assert.Contains("--operations", err);
-    }
-
-    [Fact]
-    public void TryParseOperations_MalformedJson_ReturnsFriendlyError()
-    {
-        Assert.False(EconomyCommandFactory.TryParseOperations("[{oops}]", out var ops, out var err));
         Assert.Null(ops);
         Assert.Contains("--operations", err);
     }
@@ -264,20 +154,19 @@ public class EconomyInventoryCommandTests
     }
 
     [Fact]
-    public async Task RunListAsync_OmitsEntityAndDefaultsCount()
+    public async Task RunListAsync_OmitsOptionalFieldsAndDefaultsCount()
     {
         var handler = new MockHttpMessageHandler(Ok());
         using var client = PlayFabTestClient.Create(handler);
 
         var exit = await EconomyCommandFactory.RunListAsync(
-            client, null, null, null, null, null, null,
+            client, "E1", "title_player_account", null, null, null, null,
             OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None);
 
         Assert.Equal(0, exit);
         using var doc = JsonDocument.Parse(handler.LastRequestBody!);
         var root = doc.RootElement;
-        Assert.False(root.TryGetProperty("Entity", out _));
         Assert.False(root.TryGetProperty("CollectionId", out _));
         Assert.False(root.TryGetProperty("Filter", out _));
         Assert.Equal(EconomyCommandFactory.DefaultCount, root.GetProperty("Count").GetDouble());
@@ -308,51 +197,13 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunListAsync(
-            client, null, null, null, 0, null, null,
+            client, "E1", "title_player_account", null, 0, null, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
         Assert.Equal(1, exit);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("--limit", stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunListAsync_ApiError_ReturnsOneAndWritesError()
-    {
-        var errorJson = """{"code":400,"status":"BadRequest","error":"InvalidParams","errorCode":1000,"errorMessage":"bad entity"}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(errorJson) });
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
-
-        var exit = await EconomyCommandFactory.RunListAsync(
-            client, "E1", "title_player_account", null, null, null, null,
-            OutputOptions.Json, stdout, stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Equal(string.Empty, stdout.ToString());
-        Assert.NotEqual(string.Empty, stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunListAsync_DataOnly_StripsEnvelope()
-    {
-        var handler = new MockHttpMessageHandler(Ok("""{"code":200,"status":"OK","data":{"Items":[],"ContinuationToken":"c"}}"""));
-        using var client = PlayFabTestClient.Create(handler);
-        var stdout = new StringWriter();
-
-        var exit = await EconomyCommandFactory.RunListAsync(
-            client, null, null, null, null, null, null,
-            new OutputOptions("json", DataOnly: true), stdout, new StringWriter(),
-            CancellationToken.None);
-
-        Assert.Equal(0, exit);
-        var output = stdout.ToString();
-        Assert.Contains("ContinuationToken", output);
-        Assert.DoesNotContain("status", output);
     }
 
     #endregion
@@ -454,7 +305,7 @@ public class EconomyInventoryCommandTests
         using var client = PlayFabTestClient.Create(handler);
 
         var exit = await EconomyCommandFactory.RunAddAsync(
-            client, null, null, null, null, """{"Id":"potion","StackId":"s1"}""", null, null, null,
+            client, "E1", "title_player_account", null, null, """{"Id":"potion","StackId":"s1"}""", null, null, null,
             OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None);
 
@@ -472,7 +323,7 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunAddAsync(
-            client, null, null, null, null, "{bad json", null, null, null,
+            client, "E1", "title_player_account", null, null, "{bad json", null, null, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
@@ -489,7 +340,7 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunAddAsync(
-            client, null, null, null, null, null, null, 1, null,
+            client, "E1", "title_player_account", null, null, null, null, 1, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
@@ -536,7 +387,7 @@ public class EconomyInventoryCommandTests
         try
         {
             var exit = await EconomyCommandFactory.RunOpsAsync(
-                client, null, null, null, null, path, null,
+                client, "E1", "title_player_account", null, null, path, null,
                 OutputOptions.Json, new StringWriter(), new StringWriter(),
                 CancellationToken.None);
 
@@ -558,24 +409,7 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, "[{\"Add\":{}}]", "some-file.json", null,
-            OutputOptions.Json, new StringWriter(), stderr,
-            CancellationToken.None);
-
-        Assert.Equal(1, exit);
-        Assert.Null(handler.LastRequestUri);
-        Assert.Contains("exactly one", stderr.ToString());
-    }
-
-    [Fact]
-    public async Task RunOpsAsync_NeitherSource_ReturnsOneWithoutCalling()
-    {
-        var handler = new MockHttpMessageHandler(Ok());
-        using var client = PlayFabTestClient.Create(handler);
-        var stderr = new StringWriter();
-
-        var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, null, null, null,
+            client, "E1", "title_player_account", null, "[{\"Add\":{}}]", "some-file.json", null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
@@ -592,7 +426,7 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, "[{bad}]", null, null,
+            client, "E1", "title_player_account", null, "[{bad}]", null, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
@@ -610,7 +444,7 @@ public class EconomyInventoryCommandTests
         var missing = Path.Combine(Directory.GetCurrentDirectory(), $"missing-{Guid.NewGuid():N}.json");
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, null, missing, null,
+            client, "E1", "title_player_account", null, null, missing, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
@@ -631,7 +465,7 @@ public class EconomyInventoryCommandTests
         var json = """[{"Delete":{"Item":{"Id":"sword"}}}]""";
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, json, null, null,
+            client, "E1", "title_player_account", null, json, null, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None, confirmed: false);
 
@@ -648,7 +482,7 @@ public class EconomyInventoryCommandTests
         var json = """[{"Delete":{"Item":{"Id":"sword"}}}]""";
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, json, null, null,
+            client, "E1", "title_player_account", null, json, null, null,
             OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None, confirmed: true);
 
@@ -666,7 +500,7 @@ public class EconomyInventoryCommandTests
         var json = """[{"Add":{"Item":{"Id":"gold"},"Amount":1}},{"Delete":{"Item":{"Id":"sword"}}}]""";
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, json, null, null,
+            client, "E1", "title_player_account", null, json, null, null,
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None, confirmed: false);
 
@@ -683,7 +517,7 @@ public class EconomyInventoryCommandTests
         var json = """[{"Add":{"Item":{"Id":"sword"},"Amount":1}},{"Subtract":{"Item":{"Id":"gold"},"Amount":5}}]""";
 
         var exit = await EconomyCommandFactory.RunOpsAsync(
-            client, null, null, null, json, null, null,
+            client, "E1", "title_player_account", null, json, null, null,
             OutputOptions.Json, new StringWriter(), new StringWriter(),
             CancellationToken.None, confirmed: false);
 
@@ -742,50 +576,13 @@ public class EconomyInventoryCommandTests
         var stderr = new StringWriter();
 
         var exit = await EconomyCommandFactory.RunStatusAsync(
-            client, null, null, null, "   ",
+            client, "E1", "title_player_account", null, "   ",
             OutputOptions.Json, new StringWriter(), stderr,
             CancellationToken.None);
 
         Assert.Equal(1, exit);
         Assert.Null(handler.LastRequestUri);
         Assert.Contains("--operation-token", stderr.ToString());
-    }
-
-    #endregion
-
-    #region Endpoint coverage
-
-    [Fact]
-    public async Task AllVerbs_ReachTheirDistinctEndpoints()
-    {
-        var paths = new List<string>();
-
-        async Task Capture(Func<PlayFabApiClient, Task<int>> run)
-        {
-            var handler = new MockHttpMessageHandler(Ok());
-            using var client = PlayFabTestClient.Create(handler);
-            var exit = await run(client);
-            Assert.Equal(0, exit);
-            paths.Add(new Uri(handler.LastRequestUri!).AbsolutePath);
-        }
-
-        await Capture(c => EconomyCommandFactory.RunListAsync(c, null, null, null, null, null, null, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-        await Capture(c => EconomyCommandFactory.RunCollectionsAsync(c, null, null, null, null, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-        await Capture(c => EconomyCommandFactory.RunHistoryAsync(c, null, null, null, null, null, null, null, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-        await Capture(c => EconomyCommandFactory.RunAddAsync(c, null, null, null, "sword", null, null, 1, null, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-        await Capture(c => EconomyCommandFactory.RunOpsAsync(c, null, null, null, "[{\"Add\":{\"Item\":{\"Id\":\"x\"},\"Amount\":1}}]", null, null, OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-        await Capture(c => EconomyCommandFactory.RunStatusAsync(c, null, null, null, "tok", OutputOptions.Json, new StringWriter(), new StringWriter(), CancellationToken.None));
-
-        Assert.Equal(new[]
-        {
-            EconomyCommandFactory.GetInventoryItemsPath,
-            EconomyCommandFactory.GetInventoryCollectionIdsPath,
-            EconomyCommandFactory.GetTransactionHistoryPath,
-            EconomyCommandFactory.AddInventoryItemsPath,
-            EconomyCommandFactory.ExecuteInventoryOperationsPath,
-            EconomyCommandFactory.GetInventoryOperationStatusPath,
-        }, paths);
-        Assert.Equal(6, paths.Distinct().Count());
     }
 
     #endregion

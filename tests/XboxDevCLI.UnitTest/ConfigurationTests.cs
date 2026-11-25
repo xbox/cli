@@ -188,37 +188,6 @@ public class ConfigurationTests
         }
     }
 
-    [Fact]
-    public void LoadConfiguration_FailedSnapshotPreservesTheErrorForCommandHandlers()
-    {
-        using var unreadable = TestSettings.UseUnreadable();
-        var parseResult = Program.BuildRootCommand().Parse("auth status", Program.NoResponseFileConfig);
-
-        var startupError = Assert.Throws<InvalidDataException>(() => Program.LoadConfiguration(parseResult));
-        var commandError = Assert.Throws<InvalidDataException>(() => Program.LoadConfiguration(parseResult));
-
-        Assert.Same(startupError, commandError);
-    }
-
-    /// <summary>
-    /// Built-in settings that aren't valid JSON are a configuration error the error boundary
-    /// reports, not a crash.
-    /// </summary>
-    [Theory]
-    [InlineData("{ not json")]
-    [InlineData("[]")]
-    public void LoadConfiguration_InvalidBuiltInJson_IsAnExpectedFailure(string json)
-    {
-        using var invalid = TestSettings.Use(json);
-        var parseResult = Program.BuildRootCommand().Parse("auth status", Program.NoResponseFileConfig);
-
-        var error = Assert.Throws<InvalidDataException>(() => Program.LoadConfiguration(parseResult));
-
-        Assert.Equal(LoadedConfiguration.InvalidBuiltInSettingsMessage, error.Message);
-        Assert.True(error.InnerException is System.Text.Json.JsonException or FormatException);
-        Assert.True(CommandErrorBoundary.IsExpected(error));
-    }
-
     /// <summary>
     /// The built-in settings are the source file, embedded, so what's tested and reviewed is what ships.
     /// </summary>
@@ -229,9 +198,11 @@ public class ConfigurationTests
         using var reader = new StreamReader(BuiltInSettings.Open());
 
         Assert.Equal(source.ReplaceLineEndings(), reader.ReadToEnd().ReplaceLineEndings());
-        Assert.Single(
-            typeof(Program).Assembly.GetManifestResourceNames(),
-            name => name.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(
+            [BuiltInSettings.ResourceName, XboxLiveFeatureNames.ResourceName],
+            typeof(Program).Assembly.GetManifestResourceNames()
+                .Where(name => name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                .Order(StringComparer.Ordinal));
     }
 
     /// <summary>
@@ -241,123 +212,6 @@ public class ConfigurationTests
     [Fact]
     public void BuiltInSettings_HoldNoTelemetryConnectionString() =>
         Assert.Null(GetBuiltInValue("Telemetry:ConnectionString"));
-
-    /// <summary>
-    /// A settings file beside the executable isn't read, so an endpoint in it can't redirect
-    /// requests, and a command that reads settings notes once that it's ignored.
-    /// </summary>
-    [Fact]
-    public void SettingsFileBesideTheExecutable_IsIgnoredWithANote()
-    {
-        var directory = Directory.CreateTempSubdirectory("xbox-install-");
-        try
-        {
-            var file = Path.Combine(directory.FullName, "appsettings.json");
-            File.WriteAllText(file, """{ "PlayFab": { "BaseUrlTemplate": "https://file.nodpublishers.com" } }""");
-            var parseResult = Program.BuildRootCommand().Parse("auth status", Program.NoResponseFileConfig);
-            var invocation = new CommandInvocation(
-                parseResult,
-                () => new ConfigurationBuilder().AddJsonStream(BuiltInSettings.Open()).Build(),
-                directory.FullName);
-
-            var stderr = CaptureStderr(() =>
-            {
-                invocation.Prepare(CommandRequirement.Configuration, ServiceEndpoints.PlayFab);
-                invocation.ForResolved(parseResult).Prepare(CommandRequirement.Configuration, ServiceEndpoints.PlayFab);
-            });
-
-            Assert.Equal(
-                EndpointOverrideWarning.DefaultBaseUrlTemplate,
-                invocation.Configuration[EndpointOverrideWarning.ConfigurationKey]);
-            Assert.Equal(
-                $"Note: '{file}' is no longer read. Settings come from the built-in defaults, XBOX_ environment "
-                + $"variables, and command options. Delete the file to hide this note.{Environment.NewLine}",
-                stderr);
-        }
-        finally
-        {
-            directory.Delete(recursive: true);
-        }
-    }
-
-    [Theory]
-    [InlineData("appsettings.Development.json", true)]
-    [InlineData("appsettings.json", true)]
-    [InlineData("settings.json", false)]
-    public void RetiredSettingsNotice_NamesOnlyFilesEarlierReleasesRead(string fileName, bool noted)
-    {
-        var directory = Directory.CreateTempSubdirectory("xbox-install-");
-        try
-        {
-            File.WriteAllText(Path.Combine(directory.FullName, fileName), "{}");
-
-            Assert.Equal(noted, LoadedConfiguration.GetRetiredSettingsNotice(directory.FullName) is not null);
-        }
-        finally
-        {
-            directory.Delete(recursive: true);
-        }
-    }
-
-    [Fact]
-    public void RetiredSettingsNotice_IsNullForADirectoryThatCantBeRead() =>
-        Assert.Null(LoadedConfiguration.GetRetiredSettingsNotice(
-            Path.Combine(Path.GetTempPath(), $"missing-{Guid.NewGuid():N}")));
-
-    /// <summary>
-    /// The file's name is written to the terminal, so characters that could reorder or control
-    /// the terminal are removed from it. A bidi override is used because every OS allows it in a
-    /// file name.
-    /// </summary>
-    [Fact]
-    public void RetiredSettingsNotice_RemovesUnsafeCharactersFromTheFileName()
-    {
-        var directory = Directory.CreateTempSubdirectory("xbox-install-");
-        try
-        {
-            File.WriteAllText(Path.Combine(directory.FullName, "appsettings.\u202Egnp.json"), "{}");
-
-            var notice = LoadedConfiguration.GetRetiredSettingsNotice(directory.FullName);
-
-            Assert.NotNull(notice);
-            Assert.DoesNotContain('\u202E', notice);
-            Assert.Contains(Path.Combine(directory.FullName, "appsettings.gnp.json"), notice, StringComparison.Ordinal);
-        }
-        finally
-        {
-            directory.Delete(recursive: true);
-        }
-    }
-
-    /// <summary>
-    /// With JSON output, a command such as <c>auth status</c> writes its errors to stderr as
-    /// JSON, so the note isn't written before them.
-    /// </summary>
-    [Theory]
-    [InlineData("json")]
-    [InlineData("json-compact")]
-    public void SettingsFileBesideTheExecutable_IsNotNotedWithJsonOutput(string format)
-    {
-        var directory = Directory.CreateTempSubdirectory("xbox-install-");
-        try
-        {
-            File.WriteAllText(Path.Combine(directory.FullName, "appsettings.json"), "{}");
-            var parseResult = Program.BuildRootCommand().Parse(
-                ["auth", "status", "--output", format], Program.NoResponseFileConfig);
-            var invocation = new CommandInvocation(
-                parseResult,
-                () => new ConfigurationBuilder().AddJsonStream(BuiltInSettings.Open()).Build(),
-                directory.FullName);
-
-            var stderr = CaptureStderr(() => invocation.Prepare(CommandRequirement.Configuration, ServiceEndpoints.None));
-
-            Assert.Empty(stderr);
-        }
-        finally
-        {
-            directory.Delete(recursive: true);
-        }
-    }
 
     /// <summary>An option beats its variable, which beats the built-in value.</summary>
     [Fact]
@@ -383,38 +237,8 @@ public class ConfigurationTests
         }
     }
 
-    /// <summary>
-    /// <c>--config-env</c> selected a settings file earlier releases read. It's hidden, and using
-    /// it fails with what replaced it rather than being silently ignored.
-    /// </summary>
-    [Fact]
-    public void ConfigEnvOption_IsHiddenAndRefused()
-    {
-        var parseResult = Program.BuildRootCommand().Parse("--config-env Development auth status", Program.NoResponseFileConfig);
-
-        Assert.True(Program.ConfigEnvOption.Hidden);
-        Assert.Equal(Program.ConfigEnvRetiredMessage, Assert.Single(parseResult.Errors).Message);
-    }
-
     private static string? PlayFabWarning(ParseResult parseResult) =>
         Program.GetInvocation(parseResult).LoadedConfiguration.Warnings.GetValueOrDefault(ServiceEndpoints.PlayFab);
-
-    private static string CaptureStderr(Action run)
-    {
-        var original = Console.Error;
-        using var stderr = new StringWriter();
-        Console.SetError(stderr);
-        try
-        {
-            run();
-        }
-        finally
-        {
-            Console.SetError(original);
-        }
-
-        return stderr.ToString();
-    }
 
     private static string RepositoryRoot()
     {

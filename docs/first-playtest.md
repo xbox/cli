@@ -49,16 +49,18 @@ while. To check on it:
 xbox package list --store-id 9N0000000000 --output table
 ```
 
-The package is ready when `STATE` is `Processed` and `PLAYTEST` is `true`. Note its `PACKAGE ID`.
-The table doesn't show validation results, so check in JSON that its `validationItems` contain no
-item with severity `Error`:
+The package is ready when `STATE` is `Processed`, `ERRORS` is `0`, and `PLAYTEST` is `true`.
+Note its `PACKAGE ID`.
+
+If `STATE` is `ProcessFailed`, `ERRORS` isn't `0`, or `PLAYTEST` stays `false`, read the
+package's `validationItems` in JSON:
 
 ```bash
 xbox package list --store-id 9N0000000000
 ```
 
-If `STATE` is `ProcessFailed`, `PLAYTEST` stays `false`, or there's an `Error` item, check the
-package requirements in [Prerequisites for a playtest](https://learn.microsoft.com/gaming/game-publishing/concepts/playtest-preview#prerequisites-for-a-playtest).
+Then check the package requirements in
+[Prerequisites for a playtest](https://learn.microsoft.com/gaming/game-publishing/concepts/playtest-preview#prerequisites-for-a-playtest).
 
 ## 2. Create an audience
 
@@ -132,7 +134,7 @@ See [Publishing a playtest](commands/playtest.md#publishing-a-playtest).
 Once the playtest is live, testers in its audience can find it in their library:
 
 - On a console, in **Full Library**, under the **Playtest** filter.
-- On a PC, in the XBOX app's **Library**, under the **Access** filter.
+- On a PC, in the XBOX app's **Library**, by selecting **Playtest** in the **Access** filter.
 
 Newly added testers need to sign out and back in first.
 
@@ -150,6 +152,5 @@ You can upload packages from continuous integration (CI) pipelines with a servic
 [Automation (service principal) authentication](authentication.md#automation-service-principal-authentication).
 
 In a script that runs while you're signed in, pass `--confirm` to `playtest create` and
-`playtest publish`, because without a terminal they can't ask you, and make no change. Read the
-JSON they print, and check their exit codes. To wait longer than 5 minutes for a publish, pass
-`--timeout`.
+`playtest publish`, because without a terminal they can't ask you, and make no change. To wait
+longer than 5 minutes for a publish, pass `--timeout`.

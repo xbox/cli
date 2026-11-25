@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Configuration;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Commands;
+using XboxDevCLI.Output;
 using XboxDevCLI.Safety;
 using XboxDevCLI.Telemetry;
 
@@ -390,16 +391,18 @@ internal static class ContextResolver
 
     /// <summary>
     /// Names each value the command didn't get from its command line on stderr: always for a
-    /// command that changes something, and with <c>--verbose</c> for the rest. A variable that wins
-    /// over the profile <c>--profile</c> asked for is named even for a read.
+    /// command that changes something, including this PC, and with <c>--verbose</c> for the rest.
+    /// A variable that wins over the profile <c>--profile</c> asked for is named even for a read.
     /// </summary>
     private static void WriteSources(ParseResult parseResult, IReadOnlyList<ContextValue> values, string? explicitProfile)
     {
-        var changes = CommandMetadataRegistry.IsMutation(parseResult.CommandResult.Command, GetApiPath(parseResult));
+        var command = parseResult.CommandResult.Command;
+        var changes = CommandMetadataRegistry.IsMutation(command, GetApiPath(parseResult))
+            || CommandMetadataRegistry.GetMetadata(command).Safety == CommandSafety.MachineState;
         var verbose = parseResult.GetValue(Program.VerboseOption);
         foreach (var value in values)
         {
-            var line = $"Using {value.Option.Name} {value.Value} from {value.Origin}";
+            var line = $"Using {value.Option.Name} {TerminalText.SingleLine(value.Value)} from {value.Origin}";
             if (value.Profile is null && explicitProfile is not null)
             {
                 Console.Error.WriteLine($"{line}, not profile {explicitProfile}.");

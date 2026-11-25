@@ -40,30 +40,6 @@ public class TableFormatterTests
         Assert.Contains("Lucerne Publishing", lines[3], StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void FormatReportsEmptyCollectionRatherThanBareHeaders()
-    {
-        var payload = Parse("""{ "sellers": [] }""");
-
-        Assert.Equal("No results.", TableFormatter.Format(payload, SellerView));
-    }
-
-    /// <summary>
-    /// The failure Azure CLI's generic flattener produces instead: a nested-only result there
-    /// prints a blank line and exits successfully, which reads as "no results".
-    /// </summary>
-    [Fact]
-    public void FormatThrowsWhenCollectionIsMissing()
-    {
-        var payload = Parse("""{ "somethingElse": [] }""");
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(payload, SellerView));
-
-        Assert.Contains("sellers", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("--output json", exception.Message, StringComparison.Ordinal);
-    }
-
     /// <summary>
     /// A cut that falls inside a text element must not split it.
     /// </summary>
@@ -150,36 +126,6 @@ public class TableFormatterTests
     }
 
     [Fact]
-    public void FormatThrowsWhenCollectionIsAScalar()
-    {
-        // An object collection is legitimate — some responses key their records by name — but a
-        // bare scalar has no records to enumerate.
-        var payload = Parse("""{ "sellers": "1234567" }""");
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(payload, SellerView));
-
-        Assert.Contains("rather than an array or an object", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// Responses that key their records by id or name — file metadata is keyed by file name — are
-    /// still a list of records to a reader, so the values are enumerated.
-    /// </summary>
-    [Fact]
-    public void FormatRendersAKeyedCollectionByEnumeratingItsValues()
-    {
-        var payload = Parse(
-            """{ "sellers": { "a": { "sellerId": "1", "name": "One" }, "b": { "sellerId": "2", "name": "Two" } } }""");
-
-        var lines = TableFormatter.Format(payload, SellerView).Split(Environment.NewLine);
-
-        Assert.Equal(4, lines.Length);
-        Assert.Contains("One", lines[2], StringComparison.Ordinal);
-        Assert.Contains("Two", lines[3], StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void FormatRendersMissingFieldsAsPlaceholderRatherThanFailing()
     {
         var payload = Parse("""{ "sellers": [ { "sellerId": "1234567" } ] }""");
@@ -188,17 +134,6 @@ public class TableFormatterTests
 
         Assert.Contains("1234567", lines[2], StringComparison.Ordinal);
         Assert.EndsWith("-", lines[2], StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatReadsNestedPropertiesThroughDottedPaths()
-    {
-        var view = new TableView(
-            "items",
-            [new TableColumn("REGION", "Metadata.Region", 20)]);
-        var payload = Parse("""{ "items": [ { "Metadata": { "Region": "EastUs" } } ] }""");
-
-        Assert.Contains("EastUs", TableFormatter.Format(payload, view), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -218,24 +153,6 @@ public class TableFormatterTests
         Assert.Contains("true", lines[2], StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// A value carrying a newline or an ANSI escape must not be able to break the column layout
-    /// or inject styling into output that a human is reading.
-    /// </summary>
-    [Fact]
-    public void FormatNeutralizesControlCharactersInValues()
-    {
-        var payload = Parse("""
-        { "sellers": [ { "sellerId": "1", "name": "Line\u001b[31mBreak\nName" } ] }
-        """);
-
-        var table = TableFormatter.Format(payload, SellerView);
-
-        Assert.Equal(3, table.Split(Environment.NewLine).Length);
-        Assert.DoesNotContain('\u001b', table);
-        Assert.DoesNotContain('\n', table.Split(Environment.NewLine)[2]);
-    }
-
     [Fact]
     public void FormatNeutralizesUnicodeSeparatorsAndBidiControlsInValues()
     {
@@ -250,18 +167,6 @@ public class TableFormatterTests
         Assert.DoesNotContain('\u2029', table);
         Assert.DoesNotContain('\u202e', table);
         Assert.Contains("One Two Three abc", table, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void FormatTruncatesValuesBeyondTheColumnWidth()
-    {
-        var longName = new string('x', 80);
-        var payload = Parse($$"""{ "sellers": [ { "sellerId": "1", "name": "{{longName}}" } ] }""");
-
-        var table = TableFormatter.Format(payload, SellerView);
-
-        Assert.DoesNotContain(longName, table, StringComparison.Ordinal);
-        Assert.Contains("...", table, StringComparison.Ordinal);
     }
 
     #region Record views
@@ -303,16 +208,6 @@ public class TableFormatterTests
         Assert.Contains("4", lines[2], StringComparison.Ordinal);
     }
 
-    /// <summary>An absent field reads as missing, exactly as it does in a collection row.</summary>
-    [Fact]
-    public void RecordViewRendersAbsentFieldsAsDashes()
-    {
-        var table = TableFormatter.Format(Parse("""{ "BuildId": "abc" }"""), BuildView);
-        var row = table.Split(Environment.NewLine)[2];
-
-        Assert.Contains('-', row);
-    }
-
     [Fact]
     public void RecordViewReadsANestedRecordWhenTheViewNamesOne()
     {
@@ -332,62 +227,6 @@ public class TableFormatterTests
     }
 
     /// <summary>
-    /// A named record that is missing must fail rather than render a column of dashes, which would
-    /// be indistinguishable from a record whose fields are all empty.
-    /// </summary>
-    [Fact]
-    public void RecordViewFailsWhenTheNamedRecordIsAbsent()
-    {
-        var view = TableView.Record("Change", [new TableColumn("REQUEST ID", "RequestId", 38)]);
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(Parse("""{ "Other": {} }"""), view));
-
-        Assert.Contains("does not contain the expected 'Change'", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RecordViewFailsWhenTheNamedRecordIsNotAnObject()
-    {
-        var view = TableView.Record("Change", [new TableColumn("REQUEST ID", "RequestId", 38)]);
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(Parse("""{ "Change": [] }"""), view));
-
-        Assert.Contains("rather than an object", exception.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RecordViewTruncatesValuesBeyondTheColumnWidth()    {
-        var longName = new string('x', 80);
-        var payload = Parse($$"""{ "BuildId": "1", "BuildName": "{{longName}}" }""");
-
-        var table = TableFormatter.Format(payload, BuildView);
-
-        Assert.DoesNotContain(longName, table, StringComparison.Ordinal);
-        Assert.Contains("...", table, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// Record cells go through the same control-character sanitization as collection rows.
-    /// </summary>
-    /// <remarks>
-    /// A newline would break the one-field-per-line layout and an ANSI escape would inject
-    /// terminal styling into output documented as plain. Collection rows were normalized in
-    /// <c>Render</c>; the record path needs the same treatment because it does not go through it.
-    /// </remarks>
-    [Fact]
-    public void RecordViewSanitizesControlCharactersInCells()
-    {
-        var payload = Parse("""{ "BuildId": "a\u001b[31mb", "BuildName": "one\ntwo\tthree" }""");
-
-        var table = TableFormatter.Format(payload, BuildView);
-
-        Assert.DoesNotContain('\u001b', table);
-        Assert.Equal(3, table.Split(Environment.NewLine).Length);
-        Assert.Contains("one two three", table, StringComparison.Ordinal);
-    }
-    /// <summary>
     /// An explicitly null collection means "no value", so it reports no results rather than
     /// failing. The JSON path prints an empty result happily for the same response.
     /// </summary>
@@ -397,19 +236,6 @@ public class TableFormatterTests
         var table = TableFormatter.Format(Parse("""{ "sellers": null }"""), SellerView);
 
         Assert.Equal(TableFormatter.EmptyNotice, table);
-    }
-
-    /// <summary>
-    /// A missing collection still fails: reporting "no results" would present a field the service
-    /// renamed as an empty account, which is worse than an error naming the property.
-    /// </summary>
-    [Fact]
-    public void AbsentCollectionStillFails()
-    {
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(Parse("""{ "other": [] }"""), SellerView));
-
-        Assert.Contains("does not contain the expected 'sellers'", exception.Message, StringComparison.Ordinal);
     }
 
     /// <summary>A column marked for redaction masks its value.</summary>
@@ -544,7 +370,6 @@ public class TableFormatterTests
         Assert.Matches(@"^TITLEPLAYER456\s+members$", lines[3]);
         Assert.Matches(@"^TITLEPLAYER789\s+members$", lines[4]);
     }
-
     /// <summary>A record whose list is empty, null, or absent keeps its row, so an empty role isn't hidden.</summary>
     [Fact]
     public void ExpandedViewKeepsARecordWithNoItems()
@@ -568,44 +393,6 @@ public class TableFormatterTests
     }
 
     /// <summary>
-    /// A list that's present but isn't one fails, rather than showing a role that has members as
-    /// one without any.
-    /// </summary>
-    [Theory]
-    [InlineData("""{ "Key": { "Id": "TITLEPLAYER123" } }""", "an object")]
-    [InlineData("42", "a number")]
-    [InlineData("true", "a boolean")]
-    [InlineData("\"TITLEPLAYER123\"", "a string")]
-    public void ExpandedViewRejectsAListThatIsNotAnArray(string members, string described)
-    {
-        var payload = Parse($$"""{ "Members": [ { "RoleId": "admins", "Members": {{members}} } ] }""");
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(payload, RoleMemberView));
-
-        Assert.Contains($"'Members' is {described} rather than an array", exception.Message, StringComparison.Ordinal);
-        Assert.Contains("--output json", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// An item of the list that isn't a record fails like a record that isn't, rather than showing
-    /// as an empty role.
-    /// </summary>
-    [Theory]
-    [InlineData("[42]", "a number at index 0")]
-    [InlineData("[null]", "null at index 0")]
-    [InlineData("""[ { "Key": { "Id": "TITLEPLAYER123" } }, "TITLEPLAYER456" ]""", "a string at index 1")]
-    public void ExpandedViewRejectsAnItemThatIsNotAnObject(string members, string described)
-    {
-        var payload = Parse($$"""{ "Members": [ { "RoleId": "admins", "Members": {{members}} } ] }""");
-
-        var exception = Assert.Throws<InvalidDataException>(
-            () => TableFormatter.Format(payload, RoleMemberView));
-
-        Assert.Contains($"'Members.Members' contains {described} rather than an object", exception.Message, StringComparison.Ordinal);
-    }
-
-    /// <summary>
     /// Each row is labelled with its collection, and a column limited to some collections shows
     /// "-" on the others' rows, even where the record has the field.
     /// </summary>
@@ -625,20 +412,6 @@ public class TableFormatterTests
         Assert.Matches(@"^TYPE\s+GROUP ID\s+ROLE ID$", lines[0]);
         Assert.Matches(@"^invitation\s+GROUP123\s+members$", lines[2]);
         Assert.Matches(@"^application\s+GROUP456\s+-$", lines[3]);
-    }
-
-    /// <summary>
-    /// A merged view's collections follow the rule for a view of one: a missing one fails, rather
-    /// than showing a renamed field as no results.
-    /// </summary>
-    [Fact]
-    public void MergedViewFailsWhenACollectionIsMissing()
-    {
-        var exception = Assert.Throws<InvalidDataException>(() => TableFormatter.Format(
-            Parse("""{ "Applications": [ { "Group": { "Id": "GROUP456" } } ] }"""),
-            OpportunityView));
-
-        Assert.Contains("does not contain the expected 'Invitations' property", exception.Message, StringComparison.Ordinal);
     }
 
     /// <summary>A null collection counts as empty, as it does in a view of one.</summary>

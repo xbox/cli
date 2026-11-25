@@ -3,7 +3,6 @@
 
 using System.CommandLine;
 using System.CommandLine.Parsing;
-using Microsoft.Extensions.Configuration;
 using XboxDevCLI.Services;
 
 namespace XboxDevCLI.Commands;
@@ -20,15 +19,8 @@ internal sealed class XdtsSellerOption
     /// <summary>
     /// The seller: <c>--seller-id</c>, which <see cref="ContextResolver"/> fills in from
     /// <c>XBOX_SELLER_ID</c> or saved context, or <c>null</c>, for the developer's only seller.
-    /// The other parameters are the ones the <c>xbl</c> commands pass; reading it needs none.
     /// </summary>
-    public Task<long?> GetSellerIdAsync(
-        ParseResult parseResult,
-        IConfiguration configuration,
-        IXboxPartnerClient client,
-        string baseUrl,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(parseResult.GetValue(_sellerIdOption));
+    public long? GetSellerId(ParseResult parseResult) => parseResult.GetValue(_sellerIdOption);
 
     private static Option<long?> CreatePositiveLongOption(string name, string description)
     {

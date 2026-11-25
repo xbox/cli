@@ -113,6 +113,11 @@ internal static class FileCommandFactory
         // enumerates the values of a keyed collection, so a view describes it the same way.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [GetFilesPath],
+            Examples:
+            [
+                "xbox playfab file list --entity-id TITLEPLAYER123 --entity-type title_player_account",
+                "xbox playfab file list --entity-id TITLEPLAYER123 --entity-type title_player_account --output table",
+            ],
             Table: new TableView(
                 nameof(GetFilesResponse.Metadata),
                 [
@@ -203,7 +208,7 @@ internal static class FileCommandFactory
             }
             catch (Exception ex) when (CommandErrorBoundary.IsExpected(ex))
             {
-                Console.Error.WriteLine($"Download failed: {TerminalText.Message(ex.Message)}");
+                Console.Error.WriteLine($"Download failed: {TerminalText.Message(NetworkErrors.Describe(ex))}");
                 return 1;
             }
         });
@@ -213,6 +218,11 @@ internal static class FileCommandFactory
         // classification does not cover.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [GetFilesPath],
+            Examples:
+            [
+                "xbox playfab file download --entity-id TITLEPLAYER123 --entity-type title_player_account --name save.json",
+                "xbox playfab file download --entity-id TITLEPLAYER123 --entity-type title_player_account --name save.json --dest backup/save.json",
+            ],
             Output: DescribeFileOperationOutput(
                 "a line such as \"Downloaded 'save.json' to '<path>' (2048 bytes).\" " +
                 "when it succeeds"),
@@ -408,9 +418,6 @@ internal static class FileCommandFactory
         }
     }
 
-    internal static bool HasInvalidWindowsFileNameSyntax(string fileName)
-        => LocalFileNameValidator.HasInvalidWindowsSyntax(fileName);
-
     private static string ResolveConfinedPath(string baseDirectory, string path)
     {
         var candidatePath = Path.GetFullPath(path, baseDirectory);
@@ -504,6 +511,11 @@ internal static class FileCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [InitiateFileUploadsPath, FinalizeFileUploadsPath, AbortFileUploadsPath],
+            Scope: "PlayFab runs the call as the title, which can add or replace any player's files.",
+            Examples:
+            [
+                "xbox playfab file upload --entity-id TITLEPLAYER123 --entity-type title_player_account --file save.json --playfab-title-id ABC123",
+            ],
             Output: DescribeFileOperationOutput(
                 "\"Uploading source file: <path>\" when it starts, and a line such as " +
                 "\"Uploaded 'save.json' (2048 bytes).\" when it succeeds"),
@@ -675,7 +687,7 @@ internal static class FileCommandFactory
             {
                 OperationCanceledException when cancellationToken.IsCancellationRequested => "Upload canceled.",
                 OperationCanceledException => "Upload failed: the file transfer timed out.",
-                _ => $"Upload failed: {ex.Message}",
+                _ => $"Upload failed: {NetworkErrors.Describe(ex)}",
             });
             return await pending.AbortAsync(finalizeMayHaveApplied: false);
         }
@@ -875,6 +887,11 @@ internal static class FileCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [DeleteFilesPath],
+            Examples:
+            [
+                "xbox playfab file delete save.json --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123 --confirm",
+            ],
+            Scope: "PlayFab runs the call as the title, which can delete any player's files.",
             Output: DescribeFileOperationOutput(
                 "a line such as \"Deleted file: 'save.json'\" or " +
                 "\"Deleted files: 'save.json', 'settings.json'\" when it succeeds")));

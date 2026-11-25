@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
+using System.Text.Json;
 
 namespace XboxDevCLI.CommandLine;
 
@@ -122,8 +123,9 @@ internal enum CommandSafety
 /// Whether to mask the value instead of printing it. Set this for credentials and other secrets.
 /// </param>
 /// <param name="Transform">
-/// Optional table-only projection of a scalar field, such as the filename of a CDN URL.
-/// JSON output retains the original field.
+/// Optional table-only projection of a field's JSON value, such as the filename of a CDN URL or
+/// the count of a list. A missing field shows "-" without calling it. JSON output retains the
+/// original field.
 /// </param>
 /// <remarks>
 /// Redaction applies to table output only. The JSON formats still return the real value — the
@@ -136,7 +138,7 @@ internal sealed record TableColumn(
     string Property,
     int MaximumWidth = 40,
     bool Redact = false,
-    Func<string, string>? Transform = null)
+    Func<JsonElement, string>? Transform = null)
 {
     /// <summary>What a redacted cell shows in place of the value.</summary>
     internal const string RedactedCell = "********";
@@ -154,6 +156,12 @@ internal sealed record TableColumn(
     internal bool IsSourceLabel => Property == SourceLabel;
 
     /// <summary>
+    /// Whether this column reads its view's expanded list as a whole, such as to count it, rather
+    /// than the row's item. Rows of the same record show the same value.
+    /// </summary>
+    internal bool ReadsWholeList { get; init; }
+
+    /// <summary>
     /// The collections of a merged view that have this column's field, when only some do, such
     /// as an invitation's role, which applications don't have. Rows from the others show "-".
     /// Unset means every collection has it, which the tests check against the generated models.
@@ -168,9 +176,10 @@ internal enum TableShape
     Collection,
 
     /// <summary>
-    /// The source is one record, rendered as a one-row table. The distinction matters because an
-    /// object-valued source is otherwise ambiguous: <c>file list</c> returns records keyed by
-    /// file name, where the object is a map of rows, not a row itself.
+    /// The source is one record, rendered as a one-row table, or a row per item of its expanded
+    /// list. The distinction matters because an object-valued source is otherwise ambiguous:
+    /// <c>file list</c> returns records keyed by file name, where the object is a map of rows,
+    /// not a row itself.
     /// </summary>
     Record,
 }
@@ -240,12 +249,13 @@ internal sealed record TableView(
 
     /// <summary>
     /// A list on each record whose items become the rows, for a response that nests its records,
-    /// such as group roles that each hold their members.
+    /// such as group roles that each hold their members, or an audience that holds its members.
     /// </summary>
     /// <remarks>
     /// A column reads the row's item through this name, as in <c>Members.Key.Id</c>, and its
-    /// record's own fields as usual, so each row repeats its record's fields. A record whose list
-    /// is empty still gets one row, so it isn't hidden.
+    /// record's own fields as usual, so each row repeats its record's fields. A column that sets
+    /// <see cref="TableColumn.ReadsWholeList"/> reads the list itself. A record whose list is
+    /// empty still gets one row, so it isn't hidden. This applies to record views too.
     /// </remarks>
     internal string? Expand { get; init; }
 
@@ -325,8 +335,9 @@ internal sealed record CommandPaging(
 /// </param>
 /// <param name="Table">
 /// The table view for <c>--output table</c>: a collection view when the response holds many
-/// records, or a record view when it is a single object, which renders as a one-row table.
-/// Commands without one reject <c>--output table</c> rather than rendering a degenerate table.
+/// records, or a record view when it is a single object, which renders as a one-row table,
+/// or a row per item of its expanded list. Commands without one reject <c>--output table</c>
+/// rather than rendering a degenerate table.
 /// </param>
 /// <param name="Paging">
 /// Set when the command returns one page of results per call. See <see cref="CommandPaging"/>.

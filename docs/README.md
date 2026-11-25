@@ -25,6 +25,7 @@ work with Partner Center games, playtests, XBOX services configuration, and Play
 |------|----------------|
 | [Commands](commands.md) | Global options, output formats, exit codes, and every command below. |
 | [PlayFab API integration](playfab-api.md) | Find and call PlayFab APIs from the terminal. |
+| [XBOX services settings](xbox-services-settings.md) | Which document holds each title setting, access policy, privilege, and single sign-on endpoint, and how it goes live. |
 
 The command pages follow the command tree:
 
@@ -39,6 +40,7 @@ The command pages follow the command tree:
   - [`pc`](commands/pc.md): this PC's XBOX sandbox (Experimental)
   - [`test-account`](commands/test-account.md): XBOX test accounts and their batches
   - [`playtest`](commands/playtest.md): XBOX game playtests
+  - [`store-listing`](commands/store-listing.md): a game's Store listing text (Experimental)
   - [`playfab`](commands/playfab.md): PlayFab services
     - [`api`](commands/playfab/api.md): call any API endpoint directly
     - [`mps`](commands/playfab/mps.md): Multiplayer Servers (Experimental)
@@ -55,9 +57,15 @@ The command pages follow the command tree:
     - [`service-principal`](commands/playfab/service-principal.md): service-principal access to a studio (Experimental)
   - [`xbl`](commands/xbl.md): XBOX services configuration (Experimental)
     - [`achievement-image`](commands/xbl/achievement-image.md): achievement images
+    - [`binding`](commands/xbl/binding.md): bindings that make a game use another game's configuration
+    - [`global-storage`](commands/xbl/global-storage.md): global title storage files
+    - [`web-service`](commands/xbl/web-service.md): web services and their certificates
+    - [`relying-party`](commands/xbl/relying-party.md): relying parties, which set the tokens for your web services
+    - [`business-partner`](commands/xbl/business-partner.md): business partners, which own relying parties and web services
   - [`info`](commands/info.md): version and links
   - [`upgrade`](commands/upgrade.md): check for a newer release
   - [`feedback`](commands/feedback.md): open a bug-report draft with environment information
+  - [`completion`](commands/completion.md): shell completion scripts
   - [`help`](commands/help.md): help for any command
 
 ## Behavior

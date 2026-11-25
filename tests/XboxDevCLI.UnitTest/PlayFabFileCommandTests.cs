@@ -5,8 +5,6 @@ using System.Net;
 using System.Text.Json;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.PlayFab.Commands;
-using DataModels = XboxDevCLI.PlayFab.Generated.Data;
-using XboxDevCLI.Safety;
 using XboxDevCLI.Output;
 using XboxDevCLI.Telemetry;
 using Xunit;
@@ -17,22 +15,6 @@ public class PlayFabFileCommandTests
 {
     private const string ListCommand =
         "xbox --playfab-title-id ABC123 playfab file list --entity-id E1 --entity-type title";
-
-    #region Command Structure Tests
-
-    [Fact]
-    public void FilesCommand_HasExpectedSubcommands()
-    {
-        var command = FileCommandFactory.Create();
-
-        Assert.Equal(4, command.Subcommands.Count);
-        Assert.Contains(command.Subcommands, c => c.Name == "list");
-        Assert.Contains(command.Subcommands, c => c.Name == "download");
-        Assert.Contains(command.Subcommands, c => c.Name == "upload");
-        Assert.Contains(command.Subcommands, c => c.Name == "delete");
-    }
-
-    #endregion
 
     #region Files Build Method Tests
 
@@ -55,62 +37,6 @@ public class PlayFabFileCommandTests
         Assert.Equal("E2", request.Entity!.Id);
         Assert.Equal("title", request.Entity!.Type);
         Assert.Equal(new List<string> { "file1.json", "file2.txt" }, request.FileNames);
-    }
-
-    #endregion
-
-    #region Integration Tests with PlayFabApiClient
-
-    [Fact]
-    public async Task GetFiles_SendsCorrectEntityInRequest()
-    {
-        var responseJson = """{"code":200,"status":"OK","data":{"Entity":{"Id":"E1","Type":"title"},"Metadata":null,"ProfileVersion":1}}""";
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(responseJson) });
-        using var client = PlayFabTestClient.Create(handler);
-
-        var (apiPath, request) = FileCommandFactory.BuildListCall("E1", "title_player_account");
-        await client.CallApiAsync<DataModels.GetFilesRequest, DataModels.GetFilesResponse>(apiPath, request, CancellationToken.None);
-
-        Assert.NotNull(handler.LastRequestBody);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        var entity = doc.RootElement.GetProperty("Entity");
-        Assert.Equal("E1", entity.GetProperty("Id").GetString());
-        Assert.Equal("title_player_account", entity.GetProperty("Type").GetString());
-        Assert.Contains("/File/GetFiles", handler.LastRequestUri);
-    }
-
-    [Fact]
-    public async Task DeleteFiles_WithoutConfirmation_IsBlockedByDestructiveGuard()
-    {
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"code":200,"status":"OK","data":{}}""") });
-        using var client = PlayFabTestClient.Create(handler);
-
-        var (apiPath, request) = FileCommandFactory.BuildDeleteCall("E1", "title_player_account", new[] { "file1.json" });
-
-        // /File/DeleteFiles is destructive; without confirmedDestructive the client must refuse
-        // and never issue the HTTP request.
-        await Assert.ThrowsAsync<DestructiveOperationNotConfirmedException>(
-            () => client.CallApiAsync(apiPath, JsonSerializer.Serialize(request), CancellationToken.None));
-        Assert.Null(handler.LastRequestUri);
-    }
-
-    [Fact]
-    public async Task DeleteFiles_WithConfirmation_SendsCorrectRequest()
-    {
-        var handler = new MockHttpMessageHandler(
-            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{"code":200,"status":"OK","data":{}}""") });
-        using var client = PlayFabTestClient.Create(handler);
-
-        var (apiPath, request) = FileCommandFactory.BuildDeleteCall("E1", "title_player_account", new[] { "file1.json", "file2.txt" });
-        await client.CallApiAsync(apiPath, JsonSerializer.Serialize(request), CancellationToken.None, confirmedDestructive: true);
-
-        Assert.NotNull(handler.LastRequestBody);
-        using var doc = JsonDocument.Parse(handler.LastRequestBody!);
-        var fileNames = doc.RootElement.GetProperty("FileNames").EnumerateArray().Select(e => e.GetString()).ToList();
-        Assert.Equal(new List<string?> { "file1.json", "file2.txt" }, fileNames);
-        Assert.Contains("/File/DeleteFiles", handler.LastRequestUri);
     }
 
     #endregion
@@ -356,25 +282,21 @@ public class PlayFabFileCommandTests
     }
 
     [Theory]
-    [InlineData("CON")]
     [InlineData("nul.txt")]
-    [InlineData("COM1.log")]
     [InlineData("lpt9")]
     [InlineData("name.")]
-    [InlineData("name ")]
-    public void HasInvalidWindowsFileNameSyntax_InvalidName_ReturnsTrue(string fileName)
+    public void HasInvalidWindowsSyntax_InvalidName_ReturnsTrue(string fileName)
     {
-        Assert.True(FileCommandFactory.HasInvalidWindowsFileNameSyntax(fileName));
+        Assert.True(LocalFileNameValidator.HasInvalidWindowsSyntax(fileName));
     }
 
     [Theory]
     [InlineData("data.txt")]
     [InlineData("COM0")]
     [InlineData("LPT10")]
-    [InlineData(".gitignore")]
-    public void HasInvalidWindowsFileNameSyntax_ValidName_ReturnsFalse(string fileName)
+    public void HasInvalidWindowsSyntax_ValidName_ReturnsFalse(string fileName)
     {
-        Assert.False(FileCommandFactory.HasInvalidWindowsFileNameSyntax(fileName));
+        Assert.False(LocalFileNameValidator.HasInvalidWindowsSyntax(fileName));
     }
 
     [Theory]

@@ -125,7 +125,7 @@ internal static class GroupCommandFactory
     private static Command AddCreateGroupCommand()
     {
         var groupNameOption = RequiredOption("--group-name", "The name of the group (unique per title by default).");
-        var entityIdOption = EntityIdOptional("Optional: the entity ID that will own the group (defaults to the calling entity).");
+        var entityIdOption = EntityIdOptional("Optional: the entity ID that will own the group (defaults to the title).");
         var entityTypeOption = EntityTypeOptional("Optional: the entity type of the owner (required if --entity-id is set).");
 
         var command = new Command("create", "Create a new group.")
@@ -150,7 +150,13 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [CreateGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [CreateGroupPath],
+            Scope: "PlayFab runs the call as the title. Without --entity-id, the title owns the group, not you or a player.",
+            Examples:
+            [
+                "xbox playfab group create --group-name \"Nod Arena clan\" --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateGetGroupCommand()
@@ -184,7 +190,13 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [GetGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [GetGroupPath],
+            Examples:
+            [
+                "xbox playfab group get --group-id GROUP123",
+                "xbox playfab group get --group-name \"Nod Arena clan\"",
+            ]));
     }
 
     private static Command CreateUpdateGroupCommand()
@@ -218,7 +230,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [UpdateGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [UpdateGroupPath],
+            Examples:
+            [
+                "xbox playfab group update --group-id GROUP123 --group-name \"Nod Arena champions\" --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateDeleteGroupCommand()
@@ -244,7 +261,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, confirmedDestructive: true, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [DeleteGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [DeleteGroupPath],
+            Examples:
+            [
+                "xbox playfab group delete --group-id GROUP123 --playfab-title-id ABC123 --confirm",
+            ]));
     }
 
     #endregion
@@ -276,7 +298,13 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [AddMembersPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [AddMembersPath],
+            Scope: "PlayFab runs the call as the title, which can add any player directly, without an invitation or application.",
+            Examples:
+            [
+                "xbox playfab group member add --group-id GROUP123 --member-ids TITLEPLAYER123 --member-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateMemberRemoveCommand()
@@ -304,7 +332,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [RemoveMembersPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [RemoveMembersPath],
+            Examples:
+            [
+                "xbox playfab group member remove --group-id GROUP123 --member-ids TITLEPLAYER123 --member-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateMemberChangeRoleCommand()
@@ -335,7 +368,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [ChangeMemberRolePath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [ChangeMemberRolePath],
+            Examples:
+            [
+                "xbox playfab group member change-role --group-id GROUP123 --member-ids TITLEPLAYER123 --member-type title_player_account --origin-role-id members --destination-role-id officers --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateMemberListCommand()
@@ -356,6 +394,10 @@ internal static class GroupCommandFactory
         // Members are listed inside their roles, so the table has a row per member, with its role.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListGroupMembersPath],
+            Examples:
+            [
+                "xbox playfab group member list --group-id GROUP123 --output table",
+            ],
             Table: new TableView(
                 nameof(ListGroupMembersResponse.Members),
                 [
@@ -406,6 +448,10 @@ internal static class GroupCommandFactory
         // the same mechanism `mps asset upload` uses in the opposite direction.
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [IsMemberPath],
+            Examples:
+            [
+                "xbox playfab group member is-member --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account",
+            ],
             Safety: CommandSafety.ReadOnly));
     }
 
@@ -434,7 +480,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [CreateRolePath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [CreateRolePath],
+            Examples:
+            [
+                "xbox playfab group role create --group-id GROUP123 --role-id officers --role-name Officers --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateRoleUpdateCommand()
@@ -465,7 +516,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [UpdateRolePath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [UpdateRolePath],
+            Examples:
+            [
+                "xbox playfab group role update --group-id GROUP123 --role-id officers --role-name \"Senior officers\" --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateRoleDeleteCommand()
@@ -492,7 +548,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, confirmedDestructive: true, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [DeleteRolePath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [DeleteRolePath],
+            Examples:
+            [
+                "xbox playfab group role delete --group-id GROUP123 --role-id officers --playfab-title-id ABC123 --confirm",
+            ]));
     }
 
     #endregion
@@ -530,13 +591,18 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [InviteToGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [InviteToGroupPath],
+            Examples:
+            [
+                "xbox playfab group invite send --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateInviteAcceptCommand()
     {
         var groupIdOption = GroupIdOption();
-        var entityIdOption = EntityIdOptional("Optional: the entity accepting the invitation (defaults to the calling entity).");
+        var entityIdOption = EntityIdOptional("Optional: the entity accepting the invitation (defaults to the title).");
         var entityTypeOption = EntityTypeOptional("Optional: the entity type accepting the invitation (required if --entity-id is set).");
         var command = new Command("accept", "Accept an invitation to join a group.")
         {
@@ -562,7 +628,13 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [AcceptGroupInvitationPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [AcceptGroupInvitationPath],
+            Scope: "PlayFab runs the call as the title, which accepts the invitation for the player named by --entity-id, without the player's consent.",
+            Examples:
+            [
+                "xbox playfab group invite accept --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateInviteRemoveCommand()
@@ -586,7 +658,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [RemoveGroupInvitationPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [RemoveGroupInvitationPath],
+            Examples:
+            [
+                "xbox playfab group invite remove --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateInviteListCommand()
@@ -606,6 +683,10 @@ internal static class GroupCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListGroupInvitationsPath],
+            Examples:
+            [
+                "xbox playfab group invite list --group-id GROUP123 --output table",
+            ],
             Table: new TableView(
                 nameof(ListGroupInvitationsResponse.Invitations),
                 [
@@ -625,7 +706,7 @@ internal static class GroupCommandFactory
     private static Command CreateApplicationApplyCommand()
     {
         var groupIdOption = GroupIdOption();
-        var entityIdOption = EntityIdOptional("Optional: the entity applying to the group (defaults to the calling entity).");
+        var entityIdOption = EntityIdOptional("Optional: the entity applying to the group (defaults to the title).");
         var entityTypeOption = EntityTypeOptional("Optional: the entity type applying (required if --entity-id is set).");
         var autoAcceptOption = new Option<bool?>("--auto-accept")
         {
@@ -658,14 +739,20 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [ApplyToGroupPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [ApplyToGroupPath],
+            Scope: "PlayFab runs the call as the title, which applies for the player named by --entity-id, without the player's consent.",
+            Examples:
+            [
+                "xbox playfab group application apply --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateApplicationAcceptCommand()
     {
         var groupIdOption = GroupIdOption();
-        var entityIdOption = EntityIdOptional("Optional: the applicant entity whose application to accept.");
-        var entityTypeOption = EntityTypeOptional("Optional: the applicant entity type (required if --entity-id is set).");
+        var entityIdOption = EntityIdRequired("The entity ID whose application to accept.");
+        var entityTypeOption = EntityTypeRequired("The entity type whose application to accept.");
         var command = new Command("accept", "Accept an entity's application to join a group.")
         {
             groupIdOption,
@@ -675,22 +762,19 @@ internal static class GroupCommandFactory
 
         command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
         {
-            var entityId = parseResult.GetValue(entityIdOption);
-            var entityType = parseResult.GetValue(entityTypeOption);
-
-            if (!ValidateEntityPair(entityId, entityType))
-            {
-                return 1;
-            }
-
             var (apiPath, request) = BuildAcceptGroupApplicationCall(
                 parseResult.GetValue(groupIdOption)!,
-                entityId,
-                entityType);
+                parseResult.GetValue(entityIdOption)!,
+                parseResult.GetValue(entityTypeOption)!);
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [AcceptGroupApplicationPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [AcceptGroupApplicationPath],
+            Examples:
+            [
+                "xbox playfab group application accept --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateApplicationRemoveCommand()
@@ -715,7 +799,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [RemoveGroupApplicationPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [RemoveGroupApplicationPath],
+            Examples:
+            [
+                "xbox playfab group application remove --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateApplicationListCommand()
@@ -736,6 +825,10 @@ internal static class GroupCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListGroupApplicationsPath],
+            Examples:
+            [
+                "xbox playfab group application list --group-id GROUP123 --output table",
+            ],
             Table: new TableView(
                 nameof(ListGroupApplicationsResponse.Applications),
                 [
@@ -773,7 +866,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [BlockEntityPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [BlockEntityPath],
+            Examples:
+            [
+                "xbox playfab group block add --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateBlockRemoveCommand()
@@ -798,7 +896,12 @@ internal static class GroupCommandFactory
             return await ExecuteAsync(parseResult, apiPath, request, cancellationToken: cancellationToken);
         });
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [UnblockEntityPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [UnblockEntityPath],
+            Examples:
+            [
+                "xbox playfab group block remove --group-id GROUP123 --entity-id TITLEPLAYER123 --entity-type title_player_account --playfab-title-id ABC123",
+            ]));
     }
 
     private static Command CreateBlockListCommand()
@@ -819,6 +922,10 @@ internal static class GroupCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListGroupBlocksPath],
+            Examples:
+            [
+                "xbox playfab group block list --group-id GROUP123 --output table",
+            ],
             Table: new TableView(
                 nameof(ListGroupBlocksResponse.BlockedEntities),
                 [
@@ -839,7 +946,7 @@ internal static class GroupCommandFactory
 
     private static Command CreateMembershipListCommand()
     {
-        var entityIdOption = EntityIdOptional("Optional: the entity whose memberships to list (defaults to the calling entity).");
+        var entityIdOption = EntityIdOptional("Optional: the entity whose memberships to list (defaults to the title).");
         var entityTypeOption = EntityTypeOptional("Optional: the entity type (required if --entity-id is set).");
 
         var command = new Command("list", "List all groups and roles an entity belongs to.")
@@ -864,6 +971,10 @@ internal static class GroupCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListMembershipPath],
+            Examples:
+            [
+                "xbox playfab group membership list --entity-id TITLEPLAYER123 --entity-type title_player_account --output table",
+            ],
             Table: new TableView(
                 nameof(ListMembershipResponse.Groups),
                 [
@@ -877,7 +988,7 @@ internal static class GroupCommandFactory
 
     private static Command CreateMembershipListOpportunitiesCommand()
     {
-        var entityIdOption = EntityIdOptional("Optional: the entity whose opportunities to list (defaults to the calling entity).");
+        var entityIdOption = EntityIdOptional("Optional: the entity whose opportunities to list (defaults to the title).");
         var entityTypeOption = EntityTypeOptional("Optional: the entity type (required if --entity-id is set).");
 
         var command = new Command("list", "List an entity's outstanding invitations and applications.")
@@ -902,6 +1013,10 @@ internal static class GroupCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ListMembershipOpportunitiesPath],
+            Examples:
+            [
+                "xbox playfab group membership opportunity list --entity-id TITLEPLAYER123 --entity-type title_player_account --output table",
+            ],
             Table: TableView.Merged(
                 "TYPE",
                 [
@@ -1157,11 +1272,11 @@ internal static class GroupCommandFactory
         });
 
     internal static (string apiPath, AcceptGroupApplicationRequest request) BuildAcceptGroupApplicationCall(
-        string groupId, string? entityId, string? entityType) =>
+        string groupId, string entityId, string entityType) =>
         (AcceptGroupApplicationPath, new AcceptGroupApplicationRequest
         {
             Group = Group(groupId),
-            Entity = Entity(entityId, entityType),
+            Entity = new EntityKey { Id = entityId, Type = entityType },
         });
 
     internal static (string apiPath, RemoveGroupApplicationRequest request) BuildRemoveGroupApplicationCall(

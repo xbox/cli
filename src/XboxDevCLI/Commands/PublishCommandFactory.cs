@@ -5,6 +5,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using XboxDevCLI.CommandLine;
 using XboxDevCLI.Output;
 using XboxDevCLI.Presentation;
@@ -22,18 +23,24 @@ internal static class PublishCommandFactory
     private static readonly HashSet<string> GlobalDestinations =
         new(["RETAIL", "CERT", "CERT.DEBUG"], StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The sandbox XBOX services publish the title-wide configuration to.</summary>
-    private const string TitleWideSandbox = "HIDDEN";
+    /// <summary>Exit code when the publish job finished with a status other than <c>Success</c>.</summary>
+    internal const int PublishFailedExitCode = 2;
 
-    public static Command Create(PublishConfirmationDependencies? confirmationDependencies = null)
+    /// <summary>Exit code when the publish started, but the wait ended before it finished.</summary>
+    internal const int PublishNotFinishedExitCode = 4;
+
+    private const string RunningStatus = "Running";
+    private const string SuccessStatus = "Success";
+
+    public static Command Create(
+        PublishConfirmationDependencies? confirmationDependencies = null,
+        XboxPartnerJobDependencies? jobDependencies = null)
     {
         var dependencies = confirmationDependencies ?? PublishConfirmationDependencies.Default;
+        var clock = jobDependencies ?? XboxPartnerJobDependencies.Default;
         var sellerOption = new XdtsSellerOption();
-        var target = new XboxLiveConfigurationTarget();
-        var sandboxOption = CreateRequiredSandboxOption(
-            "--sandbox-id",
-            "The destination sandbox ID whose published configuration will be updated.")
-            .AsContextValue(ContextEndpoint.XboxPartner);
+        var scope = new XboxLiveConfigurationScope(
+            "The destination sandbox ID whose published configuration will be updated.", account: true);
         var sourceSandboxOption = CreateOptionalSandboxOption(
             "--source-sandbox-id",
             "The source sandbox ID. Default: --sandbox-id.");
@@ -67,45 +74,60 @@ internal static class PublishCommandFactory
         var confirmOption = new Option<bool>("--confirm", "--yes", "-y")
         {
             Description =
-                "Confirm publishing to RETAIL, CERT, CERT.DEBUG, or HIDDEN, or from another " +
-                "sandbox, without prompting.",
+                "Confirm publishing to RETAIL, CERT, or CERT.DEBUG, the title-wide or account configuration, or " +
+                "from another sandbox, without prompting.",
         };
         var allowSharedOption = XboxLiveConfigurationTarget.CreateAllowSharedConfigurationOption();
+        var noWaitOption = new Option<bool>("--no-wait")
+        {
+            Description = "Return as soon as the publish starts, without waiting for it to finish.",
+        };
+        var timeoutOption = TestAccountCommandFactory.CreateTimeoutOption("the publish to finish");
 
         var command = new Command(
             "publish",
-            "Publish XBOX services working configuration to a sandbox");
+            "Publish XBOX services working configuration to a sandbox, or the title-wide or account configuration, and wait for it to finish");
         command.Validators.Add(result =>
         {
-            if (result.GetValue(republishOption) && result.GetValue(validateOnlyOption))
+            if (result.GetFlag(republishOption) && result.GetFlag(validateOnlyOption))
             {
                 result.AddError("--republish publishes, so it can't be combined with --validate-only.");
             }
 
-            if (string.Equals(result.GetValue(sandboxOption), TitleWideSandbox, StringComparison.OrdinalIgnoreCase))
+            bool timeoutGiven = result.GetResult(timeoutOption) is { Implicit: false };
+            if (result.GetFlag(noWaitOption) && timeoutGiven)
             {
-                string[] given = [
-                    .. result.GetResult(sourceSandboxOption) is { Implicit: false } ? ["--source-sandbox-id"] : Array.Empty<string>(),
-                    .. result.GetResult(configSetOption) is { Implicit: false } ? ["--configset"] : Array.Empty<string>(),
-                ];
-                if (given.Length > 0)
-                {
-                    result.AddError(
-                        "A title-wide (HIDDEN) publish always publishes the latest ALL working configuration, " +
-                        $"so it takes no source or version. Remove {string.Join(" and ", given)}.");
-                }
+                result.AddError("--no-wait and --timeout cannot be combined.");
+            }
+
+            if (result.GetFlag(validateOnlyOption) && (result.GetFlag(noWaitOption) || timeoutGiven))
+            {
+                result.AddError("--validate-only starts no publish to wait for, so it can't be combined with --no-wait or --timeout.");
             }
         });
         command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.RemoteMutation,
-            Scope: "One XBOX services configuration set promoted from a source sandbox to a destination sandbox.",
-            Output: "The publish operation result as JSON or a table. Validation diagnostics from " +
+            Scope: "One XBOX services configuration set promoted from a source sandbox to a destination sandbox, " +
+                "the title-wide configuration, or the seller account's configuration.",
+            Output: "The publish operation result as JSON or a table. Once the publish finishes, Status is " +
+                "its final status, Success or Failed, and StatusMessage is the service's message about it. " +
+                "With --no-wait, Status is Running. Nothing is written to stdout when the wait ends " +
+                "before the publish finishes. Validation diagnostics from " +
                 "XBOX services, such as warnings, go to stderr. A --validate-only to RETAIL also lists " +
-                "the achievements the publish adds, on stderr and in achievementChanges.",
+                "the achievements the publish adds, on stderr and in achievementChanges. The publish job ID, " +
+                "progress, and how to check a publish still running also go to stderr. With --scope account, " +
+                "the result has status, jobId, sourceVersion, previousPublishedVersion, and validation. Once the " +
+                "account's published version passes previousPublishedVersion, it adds publishedVersion; status " +
+                "stays Running, because XBOX services don't report how an account publish ends.",
             Examples:
             [
                 "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1",
                 "xbox xbl config publish --title-id 1234ABCD --sandbox-id XDKS.1",
+                "xbox xbl config publish --title-id 1234ABCD --scope title --validate-only",
+                "xbox xbl config publish --scope account --seller-id 1234567 --validate-only",
+                "xbox xbl config publish --scope account --seller-id 1234567 --confirm",
+                "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --no-wait",
+                "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --sandbox-id XDKS.1 --timeout 20m",
                 "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --source-sandbox-id STAGE.0 --sandbox-id RETAIL --validate-only",
                 "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --source-sandbox-id STAGE.0 --sandbox-id RETAIL --confirm",
                 "xbox xbl config publish --scid aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --source-sandbox-id XDKS.1 --sandbox-id TESTSB.42 --validate-only --output table",
@@ -115,14 +137,34 @@ internal static class PublishCommandFactory
             LearnMore:
             [
                 "Status AlreadyPublished means nothing changed since the last publish, so no publish " +
-                "started. --republish publishes again.",
+                "started. Except with --scope account, --republish publishes again.",
+                "Stats system, privilege, and single sign-on changes in a --scope title publish go live in each " +
+                "sandbox only when that sandbox publishes. Once the publish starts, stderr lists the publish to run " +
+                "for each published sandbox that doesn't have them yet.",
+                "Waits for the publish job by checking the sandbox's last publish, as config status reports it, " +
+                "every 10 seconds, until the job finishes or --timeout passes. Ctrl+C stops waiting; the " +
+                "publish continues on the service.",
+                "Publishing with --scope account needs Partner Center's Relying parties Write or Business partners " +
+                "Write permission, and --validate-only also accepts Relying parties Read or Business partners Read. " +
+                "A refusal names the permissions that allow the request. XBOX services don't " +
+                "report how an account publish ends, so its wait checks the account's published version, as " +
+                "config status --scope account reports it, until it passes previousPublishedVersion, and exits 0. " +
+                "Any publish of the account raises it, so that means this publish or another one committed; the " +
+                "draft is live when config status shows hasChanges false. A failed account publish leaves the " +
+                "version unchanged, so the wait ends with exit 4. Running an account publish again is safe: it " +
+                "publishes only what isn't live yet.",
+                "Exit codes: 0 published, validated, nothing to publish, or started with --no-wait; 1 not " +
+                "published; 2 the publish job failed; 3 the publish was sent, but its outcome is unknown; 4 the " +
+                "publish started, but waiting ended before it finished, or another publish started after it. On 3 " +
+                "or 4, check it with the config status command on stderr before publishing again.",
             ],
             SafetyDetails:
                 "Without --validate-only, starts publishing configuration to the destination sandbox. " +
                 "Publishing from a different --source-sandbox-id also replaces the destination's global " +
                 "title storage files with the source's and deletes files only the destination holds. " +
-                "Publishing to RETAIL, CERT, CERT.DEBUG, or HIDDEN (title-wide), or from a different " +
-                "--source-sandbox-id, requires --confirm (--yes, -y) or terminal confirmation. " +
+                "Publishing to RETAIL, CERT, or CERT.DEBUG, the title-wide configuration (--scope title or --sandbox-id HIDDEN), " +
+                "the seller account's configuration (--scope account), or from " +
+                "a different --source-sandbox-id, requires --confirm (--yes, -y) or terminal confirmation. " +
                 "Before asking at a terminal, a RETAIL publish is validated and the achievements it adds " +
                 "are listed; the publish then sends the same working version. " +
                 "Every title bound to a primary title shares its configuration. A --title-id that selects a " +
@@ -134,46 +176,71 @@ internal static class PublishCommandFactory
                 "Agent approval is still required.",
             Table: XboxPartnerCommandSupport.PublishTableView));
         sellerOption.AddTo(command);
-        target.AddTo(command);
-        command.Options.Add(sandboxOption);
+        scope.AddTo(command);
+        scope.RejectWithTitleScope(command, sourceSandboxOption, configSetOption);
+        scope.RejectWithAccountScope(command, sourceSandboxOption, configSetOption, republishOption, allowSharedOption);
         command.Options.Add(sourceSandboxOption);
         command.Options.Add(validateOnlyOption);
         command.Options.Add(configSetOption);
         command.Options.Add(republishOption);
         command.Options.Add(confirmOption);
         command.Options.Add(allowSharedOption);
+        command.Options.Add(noWaitOption);
+        command.Options.Add(timeoutOption);
         command.SetAction(async (ParseResult parseResult, CancellationToken cancellationToken) =>
         {
             var output = OutputOptions.From(parseResult);
             try
             {
-                string sandbox = parseResult.GetValue(sandboxOption)!;
                 var configuration = Program.GetConfiguration(parseResult);
                 using var client = Program.XboxPartnerClientFactory is null
                     ? new XboxPartnerClient(
                         configuration,
                         authenticationService: Program.GetAuthentication(parseResult))
                     : Program.XboxPartnerClientFactory(configuration);
-                string baseUrl = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
-                long? sellerId = await sellerOption.GetSellerIdAsync(
-                    parseResult,
-                    configuration,
-                    client,
-                    baseUrl,
-                    cancellationToken);
-                var selected = await target.SelectAsync(parseResult, sellerId);
+                _ = XboxPartnerCommandSupport.ResolveBaseUrl(configuration);
+                long? sellerId = sellerOption.GetSellerId(parseResult);
+                var selected = await scope.SelectAsync(parseResult, sellerId);
+                bool confirmed = parseResult.GetResult(confirmOption) is { Implicit: false }
+                    ? parseResult.GetValue(confirmOption)
+                    : parseResult.GetValue(Program.ConfirmOption);
+                PublishFollowUp? follow = parseResult.GetValue(validateOnlyOption)
+                    ? null
+                    : new PublishFollowUp(
+                        parseResult.GetValue(noWaitOption)
+                            ? null
+                            : TestAccountCommandFactory.ReadTimeout(parseResult, timeoutOption),
+                        clock);
+                if (selected.Scope == XboxLiveScope.Account)
+                {
+                    bool validateOnly = parseResult.GetValue(validateOnlyOption);
+                    Program.WriteVerbose(parseResult.GetValue(Program.VerboseOption), () =>
+                        $"{(validateOnly ? "Validate" : "Publish")} the account configuration of " +
+                        new XboxLiveConfigurationTarget.SelectedTarget(sellerId, null, null).Describe());
+                    return await AccountPublish.RunAsync(
+                        client,
+                        sellerId,
+                        validateOnly,
+                        confirmed,
+                        dependencies,
+                        output,
+                        Console.Out,
+                        Console.Error,
+                        string.Join(' ', RecoveryCommandArguments.Create(parseResult)),
+                        follow,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                string sandbox = selected.LiveSandbox!;
                 var request = new XboxLivePublishRequest(
                     selected.Scid,
                     sandbox,
-                    parseResult.GetValue(sourceSandboxOption) ?? sandbox,
+                    parseResult.GetValue(sourceSandboxOption)?.Trim() ?? sandbox,
                     parseResult.GetValue(validateOnlyOption),
                     parseResult.GetValue(configSetOption),
                     parseResult.GetValue(republishOption),
                     selected.TitleId,
                     parseResult.GetValue(allowSharedOption));
-                bool confirmed = parseResult.GetResult(confirmOption) is { Implicit: false }
-                    ? parseResult.GetValue(confirmOption)
-                    : parseResult.GetValue(Program.ConfirmOption);
                 bool proceed;
                 try
                 {
@@ -236,10 +303,12 @@ internal static class PublishCommandFactory
                 cancellationToken.ThrowIfCancellationRequested();
                 Program.WriteVerbose(parseResult.GetValue(Program.VerboseOption), () =>
                     $"{(request.ValidateOnly ? "Validate" : request.Republish ? "Republish" : "Publish")} " +
-                        $"{selected.Describe()} " +
-                        $"from {request.SourceSandbox} " +
-                        $"(working version {request.ConfigSetVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "latest"}) " +
-                        $"to {request.Sandbox}");
+                        $"{new XboxLiveConfigurationTarget.SelectedTarget(selected.SellerId, selected.Scid, selected.TitleId).Describe()} " +
+                        (IsTitleWide(request)
+                            ? "title-wide configuration"
+                            : $"from {request.SourceSandbox} " +
+                                $"(working version {request.ConfigSetVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "latest"}) " +
+                                $"to {request.Sandbox}"));
                 return await RunAsync(
                     client,
                     selected.SellerId,
@@ -250,7 +319,8 @@ internal static class PublishCommandFactory
                     cancellationToken,
                     writeGlobalStorageWarning: !Prompts(request, confirmed),
                     sharedConfirmation: dependencies,
-                    recoveryPrefix: string.Join(' ', RecoveryCommandArguments.Create(parseResult))).ConfigureAwait(false);
+                    recoveryPrefix: string.Join(' ', RecoveryCommandArguments.Create(parseResult)),
+                    follow: follow).ConfigureAwait(false);
             }
             catch (XboxPartnerApiException ex)
             {
@@ -264,6 +334,7 @@ internal static class PublishCommandFactory
             }
             catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
             {
+                XboxPartnerCommandSupport.WriteCorrelationId(ex, Console.Error);
                 Console.Error.WriteLine($"Request failed: {ex.Message}");
                 return 1;
             }
@@ -276,6 +347,8 @@ internal static class PublishCommandFactory
     /// Sends the publish and writes its result. <paramref name="writeGlobalStorageWarning"/> is false when the
     /// confirmation prompt already showed the global title storage warning. When the service refuses to change
     /// configuration other titles share, <paramref name="sharedConfirmation"/> asks whether to resend with the opt-in.
+    /// When <paramref name="follow"/> is set and the publish starts a job, says how to check the job, and waits
+    /// for it unless <see cref="PublishFollowUp.Timeout"/> is null.
     /// </summary>
     internal static async Task<int> RunAsync(
         XboxPartnerClient client,
@@ -287,7 +360,8 @@ internal static class PublishCommandFactory
         CancellationToken cancellationToken,
         bool writeGlobalStorageWarning = true,
         PublishConfirmationDependencies? sharedConfirmation = null,
-        string? recoveryPrefix = null)
+        string? recoveryPrefix = null,
+        PublishFollowUp? follow = null)
     {
         bool compact = output.IsCompact;
         TableView? tableView = output.TableView;
@@ -301,6 +375,13 @@ internal static class PublishCommandFactory
         string? sentCorrelationId = null;
         var answered = false;
         XboxLiveResolvedConfigurationTarget? resolved = null;
+
+        // The config status command that shows the destination's last publish.
+        string CheckCommand() =>
+            $"{recoveryPrefix ?? CliIdentity.CommandName} xbl config status " +
+            XboxPartnerCommandSupport.FormatConfigurationTarget(resolved, request.Scid, request.TitleId, sellerId) +
+            (IsTitleWide(request) ? " --scope title" : $" --sandbox-id {ShellQuoting.Quote(request.Sandbox)}");
+
         try
         {
             XboxPartnerOperationResult<XboxLivePublishResponse> response;
@@ -364,8 +445,64 @@ internal static class PublishCommandFactory
             if (string.Equals(result.Status, AlreadyPublishedStatus, StringComparison.OrdinalIgnoreCase))
             {
                 stderr.WriteLine(
-                    $"Nothing changed in {request.SourceSandbox} since its last publish to {request.Sandbox}, " +
+                    (IsTitleWide(request)
+                        ? "Nothing changed in the title-wide configuration since its last publish, "
+                        : $"Nothing changed in {request.SourceSandbox} since its last publish to {request.Sandbox}, ") +
                     "so no publish started. Use --republish to publish it again.");
+            }
+
+            if (FormatSourceWarning(request, result) is { } warning)
+            {
+                stderr.WriteLine(warning);
+            }
+
+            string body = response.Body;
+            string status = result.Status!;
+            int exitCode = 0;
+            if (follow is not null &&
+                string.Equals(result.Status, RunningStatus, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(result.JobId))
+            {
+                // Pin the status reads to the configuration the publish resolved, as config status does.
+                Guid? scid = resolved?.Scid ?? request.Scid;
+                long? statusSellerId = sellerId ?? resolved?.SellerId;
+                string? titleId = resolved is null ? request.TitleId : null;
+                string check = CheckCommand();
+                string job = XboxPartnerCommandSupport.ForTerminal(result.JobId);
+                stderr.WriteLine($"Publish job {job} started.");
+                if (follow.Timeout is not { } timeout)
+                {
+                    stderr.WriteLine($"Publishing continues on the service. Check it with: {check}");
+                }
+                else
+                {
+                    ConfigStatusCommandFactory.PublishStatus? finished = await WaitForPublishAsync(
+                        client, statusSellerId, scid, titleId, request, result.JobId, timeout, follow.Dependencies,
+                        check, stderr, cancellationToken).ConfigureAwait(false);
+                    if (finished is null)
+                    {
+                        await WriteTitleWideHintAsync().ConfigureAwait(false);
+                        return PublishNotFinishedExitCode;
+                    }
+
+                    status = finished.Status ?? "unknown";
+                    body = WithFinalStatus(body, finished);
+                    string message = finished.StatusMessage is { Length: > 0 } text
+                        ? $": {XboxPartnerCommandSupport.ForTerminal(text)}"
+                        : ".";
+                    if (string.Equals(finished.Status, SuccessStatus, StringComparison.OrdinalIgnoreCase))
+                    {
+                        stderr.WriteLine(IsTitleWide(request)
+                            ? "Published the title-wide configuration."
+                            : $"Published to {request.Sandbox}.");
+                    }
+                    else
+                    {
+                        stderr.WriteLine(
+                            $"Publish job {job} ended as {XboxPartnerCommandSupport.ForTerminal(status)}{message}");
+                        exitCode = PublishFailedExitCode;
+                    }
+                }
             }
 
             stdout.WriteLine(tableView is not null
@@ -373,7 +510,7 @@ internal static class PublishCommandFactory
                     tableView,
                     [
                         [
-                            result.Status!,
+                            status,
                             request.SourceSandbox,
                             request.Sandbox,
                             request.ValidateOnly.ToString(),
@@ -383,18 +520,29 @@ internal static class PublishCommandFactory
                                 "latest",
                         ],
                     ])
-                : PlayFabApiClient.FormatJson(response.Body, compact));
-            if (FormatSourceWarning(request, result) is { } warning)
+                : PlayFabApiClient.FormatJson(body, compact));
+            if (exitCode == 0)
             {
-                stderr.WriteLine(warning);
+                await WriteTitleWideHintAsync().ConfigureAwait(false);
             }
 
-            return 0;
+            return exitCode;
+
+            // A title-wide publish that started says which sandboxes still need their own publish.
+            async Task WriteTitleWideHintAsync()
+            {
+                if (IsTitleWide(request) && !request.ValidateOnly &&
+                    !string.Equals(result.Status, AlreadyPublishedStatus, StringComparison.OrdinalIgnoreCase))
+                {
+                    await TitleWidePublishHint.WriteAsync(
+                        client, sellerId, request, resolved, recoveryPrefix, stderr, cancellationToken).ConfigureAwait(false);
+                }
+            }
         }
         catch (OperationCanceledException) when (!request.ValidateOnly && !sent && cancellationToken.IsCancellationRequested)
         {
             stderr.WriteLine(
-                $"Canceled before the request was sent, so the publish to {TerminalText.SingleLine(request.Sandbox)} didn't start.");
+                $"Canceled before the request was sent, so {NamePublish(request)} didn't start.");
             return 1;
         }
         catch (Exception ex) when (!request.ValidateOnly && sent && !answered
@@ -402,12 +550,9 @@ internal static class PublishCommandFactory
         {
             XboxPartnerCommandSupport.WriteUncertainCause(ex, compact, stderr, cancellationToken, sentCorrelationId);
             stderr.WriteLine(
-                $"It is unknown whether the publish to {TerminalText.SingleLine(request.Sandbox)} started. " +
+                $"It is unknown whether {NamePublish(request)} started. " +
                 "Don't resubmit it.");
-            stderr.WriteLine(
-                $"Check with: {recoveryPrefix ?? CliIdentity.CommandName} xbl config status " +
-                XboxPartnerCommandSupport.FormatConfigurationTarget(resolved, request.Scid, request.TitleId, sellerId) +
-                $" --sandbox-id {ShellQuoting.Quote(request.Sandbox)}");
+            stderr.WriteLine($"Check with: {CheckCommand()}");
             return OutcomeUnknownExitCode;
         }
         catch (XboxPartnerApiException ex)
@@ -423,6 +568,7 @@ internal static class PublishCommandFactory
         }
         catch (Exception ex) when (!XboxPartnerCommandSupport.IsCallerCancellation(ex, cancellationToken))
         {
+            XboxPartnerCommandSupport.WriteCorrelationId(ex, stderr);
             stderr.WriteLine($"Request failed: {ex.Message}");
             return 1;
         }
@@ -430,12 +576,155 @@ internal static class PublishCommandFactory
 
     internal static string DescribePublish(XboxLivePublishRequest request)
     {
+        if (IsTitleWide(request))
+        {
+            return request.ValidateOnly ? "Validating the title-wide publish"
+                : request.Republish ? "Republishing the title-wide configuration"
+                : "Publishing the title-wide configuration";
+        }
+
         string verb = request.ValidateOnly ? "Validating publish"
             : request.Republish ? "Republishing"
             : "Publishing";
         return string.Equals(request.SourceSandbox, request.Sandbox, StringComparison.OrdinalIgnoreCase)
             ? $"{verb} to {request.Sandbox}"
             : $"{verb} from {request.SourceSandbox} to {request.Sandbox}";
+    }
+
+    /// <summary>Whether <paramref name="request"/> publishes the title-wide configuration, which goes live in HIDDEN.</summary>
+    internal static bool IsTitleWide(XboxLivePublishRequest request) =>
+        string.Equals(request.Sandbox, XboxLiveConfigurationScope.TitleLiveSandbox, StringComparison.OrdinalIgnoreCase);
+
+    private static string NamePublish(XboxLivePublishRequest request) =>
+        IsTitleWide(request) ? "the title-wide publish" : $"the publish to {TerminalText.SingleLine(request.Sandbox)}";
+
+    /// <summary>
+    /// Reads the destination's last publish, as config status does, until publish job <paramref name="jobId"/>
+    /// finishes or <paramref name="timeout"/> passes. Returns the finished status, or null after saying on stderr
+    /// why waiting ended and how to check the job. A read naming another job ends the wait, because this job
+    /// finished but its outcome can't be read. A read with no job ID and status Success is this job's success,
+    /// because a job that succeeds is cleared. <see cref="XboxPartnerPoller"/> does the waiting.
+    /// </summary>
+    private static async Task<ConfigStatusCommandFactory.PublishStatus?> WaitForPublishAsync(
+        XboxPartnerClient client,
+        long? sellerId,
+        Guid? scid,
+        string? titleId,
+        XboxLivePublishRequest request,
+        string jobId,
+        TimeSpan timeout,
+        XboxPartnerJobDependencies dependencies,
+        string check,
+        TextWriter stderr,
+        CancellationToken cancellationToken)
+    {
+        string stillRunning = $"Publishing continues on the service. Check it with: {check}";
+        string job = XboxPartnerCommandSupport.ForTerminal(jobId);
+        stderr.WriteLine($"Waiting up to {TestAccountCommandFactory.FormatDuration(timeout)} for it to finish...");
+        string? otherJob = null;
+        ConfigStatusCommandFactory.PublishStatus? finished = null;
+        try
+        {
+            using (RequestProgress.Start(DescribePublish(request), stderr))
+            {
+                await XboxPartnerPoller.PollAsync(
+                    async token => XboxPartnerCommandSupport.DeserializeResponse<ConfigStatusCommandFactory.PublishStatus>(
+                        await ReadStatusAsync(() => client.GetXboxLivePublishStatusAsync(
+                            sellerId, scid, request.Sandbox, token, titleId)).ConfigureAwait(false),
+                        "publish status"),
+                    status =>
+                    {
+                        // The started job's ID is recorded before the publish answers, and no other publish can
+                        // start while it runs. So a read naming another job means this one finished and another
+                        // started, and this one's outcome can no longer be read.
+                        if (!string.IsNullOrWhiteSpace(status.JobId) &&
+                            !string.Equals(status.JobId, jobId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            otherJob = status.JobId;
+                            return true;
+                        }
+
+                        // A job that succeeds is cleared from the sandbox, so its success reads back with no job
+                        // ID. A failed job keeps its ID.
+                        bool ended = string.IsNullOrWhiteSpace(status.JobId)
+                            ? string.Equals(status.Status, SuccessStatus, StringComparison.OrdinalIgnoreCase)
+                            : !string.Equals(status.Status, RunningStatus, StringComparison.OrdinalIgnoreCase);
+                        finished = ended ? status with { JobId = jobId } : null;
+                        return ended;
+                    },
+                    retryAfter => retryAfter is { } after
+                        ? TestAccountJobWaiter.Clamp(after)
+                        : TestAccountJobWaiter.DefaultInterval,
+                    timeout,
+                    dependencies.DelayAsync,
+                    dependencies.GetUtcNow,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            if (finished is not null)
+            {
+                return finished;
+            }
+
+            stderr.WriteLine(otherJob is not null
+                ? $"Publish job {job} finished, and another publish, job " +
+                    $"{XboxPartnerCommandSupport.ForTerminal(otherJob)}, started on " +
+                    $"{(IsTitleWide(request) ? "the title-wide configuration" : request.Sandbox)}, so " +
+                    $"how publish job {job} ended can't be read. Check the latest publish with: {check}"
+                : $"Publish job {job} didn't finish within {TestAccountCommandFactory.FormatDuration(timeout)}. {stillRunning}");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            stderr.WriteLine($"Stopped waiting. {stillRunning}");
+        }
+        catch (XboxPartnerApiException exception)
+        {
+            stderr.WriteLine(XboxPartnerCommandErrorFormatter.Format(exception, compact: false));
+            stderr.WriteLine($"Could not read publish job {job}. {stillRunning}");
+        }
+        catch (Exception exception) when (XboxPartnerCommandSupport.IsRequestError(exception))
+        {
+            if (exception is XboxPartnerResponseException { CorrelationId: var correlationId })
+            {
+                XboxPartnerCommandSupport.WriteCorrelationId(correlationId, stderr);
+            }
+            else
+            {
+                XboxPartnerCommandSupport.WriteCorrelationId(exception, stderr);
+            }
+
+            stderr.WriteLine($"Request failed: {exception.Message}");
+            stderr.WriteLine($"Could not read publish job {job}. {stillRunning}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Runs one read for a wait. A read wraps a dropped connection or timeout, and rethrowing the cause lets
+    /// the poller retry it; an unreadable response stays a failure.
+    /// </summary>
+    internal static async Task<string> ReadStatusAsync(Func<Task<string>> read)
+    {
+        try
+        {
+            return await read().ConfigureAwait(false);
+        }
+        catch (XboxPartnerResponseException exception) when (exception.InnerException is
+            HttpRequestException or IOException or OperationCanceledException)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception.InnerException);
+            throw;
+        }
+    }
+
+    /// <summary>Replaces the publish response's <c>Status</c> and <c>StatusMessage</c> with the finished job's.</summary>
+    private static string WithFinalStatus(string body, ConfigStatusCommandFactory.PublishStatus finished)
+    {
+        JsonObject response = JsonNode.Parse(body)!.AsObject();
+        response["Status"] = finished.Status;
+        response["StatusMessage"] = finished.StatusMessage;
+        return response.ToJsonString();
     }
 
     // A cross-sandbox publish also copies global title storage, mirroring the source's
@@ -532,10 +821,10 @@ internal static class PublishCommandFactory
         {
             reasons.Add($"{request.Sandbox} is the sandbox XBOX certification tests in.");
         }
-        else if (string.Equals(request.Sandbox, TitleWideSandbox, StringComparison.OrdinalIgnoreCase))
+        else if (IsTitleWide(request))
         {
             reasons.Add(
-                "HIDDEN publishes the title-wide configuration, which every sandbox uses, RETAIL included.");
+                "The title-wide configuration applies to every sandbox, RETAIL included.");
         }
 
         if (!string.Equals(request.SourceSandbox, request.Sandbox, StringComparison.OrdinalIgnoreCase))
@@ -574,15 +863,13 @@ internal static class PublishCommandFactory
         }
 
         string? version = request.ConfigSetVersion?.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        string configuration =
-            string.Equals(request.Sandbox, TitleWideSandbox, StringComparison.OrdinalIgnoreCase)
-                ? "the latest title-wide configuration (the working documents in ALL)"
-                : version is null
-                    ? $"{request.SourceSandbox}'s latest working configuration"
-                    : $"working version {version} of {request.SourceSandbox}'s configuration";
         string target = request.Scid is { } scid ? $"SCID {scid:D}" : $"title {request.TitleId}";
-        stderr.WriteLine(
-            $"This publishes {configuration} to {request.Sandbox} for {target}.");
+        stderr.WriteLine(IsTitleWide(request)
+            ? $"This publishes the latest title-wide draft for {target}."
+            : $"This publishes {(version is null
+                ? $"{request.SourceSandbox}'s latest working configuration"
+                : $"working version {version} of {request.SourceSandbox}'s configuration")} " +
+                $"to {request.Sandbox} for {target}.");
         foreach (string reason in reasons)
         {
             stderr.WriteLine(reason);
@@ -600,21 +887,41 @@ internal static class PublishCommandFactory
             stderr.WriteLine(globalStorageWarning);
         }
 
+        return await AskAsync(
+            IsTitleWide(request) ? "Publish the title-wide configuration? [y/N]: " : $"Publish to {request.Sandbox}? [y/N]: ",
+            dependencies,
+            stderr,
+            cancellationToken,
+            IsRetail(request.Sandbox)
+                ? "Run with --validate-only first to see which achievements this publish adds to RETAIL."
+                : null).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Asks <paramref name="question"/> at a terminal, and returns whether the answer was yes. Without a
+    /// terminal it refuses, after saying how to confirm, and <paramref name="withoutTerminal"/> when set.
+    /// </summary>
+    internal static async Task<bool> AskAsync(
+        string question,
+        PublishConfirmationDependencies dependencies,
+        TextWriter stderr,
+        CancellationToken cancellationToken,
+        string? withoutTerminal = null)
+    {
         if (!dependencies.IsInteractive())
         {
             stderr.WriteLine(
                 "Re-run with --confirm (--yes, -y) to publish without an interactive prompt.");
-            if (IsRetail(request.Sandbox))
+            if (withoutTerminal is not null)
             {
-                stderr.WriteLine(
-                    "Run with --validate-only first to see which achievements this publish adds to RETAIL.");
+                stderr.WriteLine(withoutTerminal);
             }
 
             TelemetryRecorder.RecordError(TelemetryErrorTypes.NotConfirmed);
             return false;
         }
 
-        ConfirmationPrompt.Write(stderr, $"Publish to {request.Sandbox}? [y/N]: ");
+        ConfirmationPrompt.Write(stderr, question);
         string? answer = (await dependencies.ReadLineAsync(cancellationToken).ConfigureAwait(false))?.Trim();
         if (string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
@@ -638,12 +945,19 @@ internal static class PublishCommandFactory
             return;
         }
 
-        JsonElement diagnostics = result.AdditionalProperties
-            .FirstOrDefault(property => string.Equals(
-                property.Key,
-                "ValidationResult",
-                StringComparison.OrdinalIgnoreCase))
-            .Value;
+        WriteDiagnostics(
+            result.AdditionalProperties
+                .FirstOrDefault(property => string.Equals(
+                    property.Key,
+                    "ValidationResult",
+                    StringComparison.OrdinalIgnoreCase))
+                .Value,
+            stderr);
+    }
+
+    /// <summary>Writes each validation diagnostic in <paramref name="diagnostics"/>, a JSON array, to stderr.</summary>
+    internal static void WriteDiagnostics(JsonElement diagnostics, TextWriter stderr)
+    {
         if (diagnostics.ValueKind != JsonValueKind.Array)
         {
             return;
@@ -717,27 +1031,6 @@ internal static class PublishCommandFactory
         return option;
     }
 
-    private static Option<string> CreateRequiredSandboxOption(
-        string name,
-        string description)
-    {
-        var option = new Option<string>(name)
-        {
-            HelpName = "id",
-            Description = description,
-            Required = true,
-        };
-        option.Validators.Add(result =>
-        {
-            string? value = result.GetValueOrDefault<string>();
-            if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsWhiteSpace))
-            {
-                result.AddError($"{name} must be non-empty and cannot contain whitespace.");
-            }
-        });
-        return option;
-    }
-
     private static Option<string?> CreateOptionalSandboxOption(
         string name,
         string description)
@@ -747,15 +1040,7 @@ internal static class PublishCommandFactory
             HelpName = "id",
             Description = description,
         };
-        option.Validators.Add(result =>
-        {
-            string? value = result.GetValueOrDefault<string>();
-            if (value is not null &&
-                (string.IsNullOrWhiteSpace(value) || value.Any(char.IsWhiteSpace)))
-            {
-                result.AddError($"{name} must be non-empty and cannot contain whitespace.");
-            }
-        });
+        option.Validators.Add(XboxLiveConfigurationScope.ValidateSandbox);
         return option;
     }
 }
@@ -769,3 +1054,9 @@ internal sealed record PublishConfirmationDependencies(
         XboxPartnerCommandSupport.IsInteractiveTerminal,
         FeedbackDependencies.CancelableReadLine(Console.ReadLine));
 }
+
+/// <summary>
+/// What <c>xbl config publish</c> does once a publish starts: wait up to <paramref name="Timeout"/>, or, when
+/// it's null, return at once.
+/// </summary>
+internal sealed record PublishFollowUp(TimeSpan? Timeout, XboxPartnerJobDependencies Dependencies);

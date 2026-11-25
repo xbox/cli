@@ -11,58 +11,105 @@ namespace XboxDevCLI.Commands;
 
 internal static class XboxPartnerTableFormatter
 {
-    public static string FormatConfigurations(string responseBody)
-    {
-        IReadOnlyList<XboxLiveConfigurationSummary> configurations;
-        try
-        {
-            configurations =
-                JsonSerializer.Deserialize<IReadOnlyList<XboxLiveConfigurationSummary>>(
-                    responseBody,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                ?? throw new JsonException("The response was null.");
-        }
-        catch (JsonException exception)
-        {
-            throw new InvalidDataException(
-                "The configuration response was not a valid JSON array.",
-                exception);
-        }
+    /// <summary><c>config list</c>: one row per configuration set.</summary>
+    public static string FormatConfigurations(IReadOnlyList<XboxLiveConfigurationSetStatus> sets) =>
+        Render(
+            XboxPartnerCommandSupport.ConfigurationTableView,
+            sets.Select(set => new[]
+            {
+                set.Scope ?? string.Empty,
+                set.Sandbox ?? string.Empty,
+                set.HasChanges ? "Yes" : "No",
+                FormatVersion(set.Draft?.Version),
+                FormatVersion(set.Published?.Version),
+                FormatTime(set.Published?.Time),
+                set.LastPublish?.Status ?? string.Empty,
+            }));
 
-        var rows = configurations.Select(CreateConfigurationRow);
-        return Render(XboxPartnerCommandSupport.ConfigurationTableView, rows);
-    }
+    /// <summary>A table for stdout, and lines for stderr that say what the table is about.</summary>
+    internal sealed record NotedTable(string Text, IReadOnlyList<string> Notes);
 
     /// <summary>
-    /// Renders <c>config status</c>: one sandbox's configuration state, then the status of its
-    /// last publish, blank when there's none.
+    /// <c>config status</c>: <paramref name="view"/>'s rows, and notes on the published and draft
+    /// versions. The rows come from a copy of the status. A sandbox's or the account's keeps only the
+    /// documents that differ, and adds a "description pending" change where one is. The title's keeps
+    /// every title document, and says where each goes live in place of its changes.
     /// </summary>
-    public static string FormatConfigurationStatus(string responseBody, string? publishStatus)
+    public static NotedTable FormatConfigurationStatus(XboxLiveConfigurationStatus status, TableView view)
     {
-        XboxLiveConfigurationSummary configuration;
-        try
+        bool title = string.Equals(status.Scope, XboxLiveConfigurationScopes.Title, StringComparison.OrdinalIgnoreCase);
+        XboxLiveDocumentStatus[] compared = [.. (status.Documents ?? []).Where(document => document.State is not null)];
+        int differ = compared.Count(document => !string.Equals(document.State, XboxLiveDocumentStates.Same, StringComparison.OrdinalIgnoreCase));
+
+        // Like hasChanges, a published-only document isn't counted: publishing never removes it.
+        int publishable = compared.Count(document =>
+            string.Equals(document.State, XboxLiveDocumentStates.DraftOnly, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(document.State, XboxLiveDocumentStates.Changed, StringComparison.OrdinalIgnoreCase));
+        XboxLiveDocumentStatus[] rows = title
+            ? [
+                .. (status.Documents ?? []).Select(document => document with
+                {
+                    Changes =
+                    [
+                        new XboxLiveDocumentChange
+                        {
+                            Description = string.Equals(document.PublishesWith, XboxLiveConfigurationScopes.Sandbox, StringComparison.Ordinal)
+                                ? "Publishes with each sandbox"
+                                : $"Publishes through {document.PublishesWith}",
+                        },
+                    ],
+                }),
+            ]
+            : [
+                .. compared
+                    .Where(document => !string.Equals(document.State, XboxLiveDocumentStates.Same, StringComparison.OrdinalIgnoreCase))
+                    .Select(document => string.Equals(document.DescriptionStatus, XboxLiveDescriptionStatuses.Pending, StringComparison.Ordinal)
+                        ? document with { Changes = [.. document.Changes ?? [], new XboxLiveDocumentChange { Description = "description pending" }] }
+                        : document),
+            ];
+
+        string? publishTo = title ? XboxLiveConfigurationScope.TitleLiveSandbox : status.Sandbox;
+        var notes = new List<string>
         {
-            configuration = JsonSerializer.Deserialize<XboxLiveConfigurationSummary>(
-                responseBody,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                ?? throw new JsonException("The response was null.");
-        }
-        catch (JsonException exception)
+            (status.Published?.Version is null
+                ? "Published: never."
+                : $"Published: version {FormatVersion(status.Published.Version)}{(title ? $" ({publishTo})" : string.Empty)}.")
+                + (status.LastPublish?.Status is { Length: > 0 } publish ? $" Last publish: {NormalizeCell(publish)}." : string.Empty),
+            (status.Draft?.Version is null
+                ? "Draft: never saved."
+                : $"Draft: version {FormatVersion(status.Draft.Version)}{(title ? $" ({XboxLiveConfigurationScope.TitleDraftSandbox})" : string.Empty)}.")
+                + (status.TitleDraft?.Version is { } titleDraft
+                    ? $" Title draft: version {FormatVersion(titleDraft)} ({XboxLiveConfigurationScope.TitleDraftSandbox})."
+                    : string.Empty),
+        };
+        string differing = publishable == 1 ? "1 document differs" : FormattableString.Invariant($"{publishable} documents differ");
+        notes.Add(differ == 0
+            ? (title ? $"The draft matches what's published to {publishTo}." : "The draft matches what's published.")
+            : publishable == 0
+                ? (publishTo is null ? "Nothing to publish." : $"Nothing to publish to {publishTo}.")
+                : publishTo is null
+                    ? $"{differing} between the draft and the published version."
+                    : $"{differing} for a publish to {publishTo}.");
+        int eachSandbox = (status.Documents ?? []).Count(document => document.State is null);
+        if (title && eachSandbox > 0)
         {
-            throw new InvalidDataException(
-                "The configuration response was not a valid JSON object.",
-                exception);
+            notes.Add(FormattableString.Invariant(
+                $"{eachSandbox} {(eachSandbox == 1 ? "document publishes" : "documents publish")} with each sandbox. Check them with config status --sandbox-id <sandbox>."));
         }
 
-        return Render(
-            XboxPartnerCommandSupport.ConfigurationStatusTableView,
-            [[.. CreateConfigurationRow(configuration), publishStatus ?? ""]]);
+        return new(FormatThrough(view, status with { Documents = rows }), notes);
+    }
+
+    private static string FormatThrough(TableView view, XboxLiveConfigurationStatus status)
+    {
+        using JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(status, ConfigStatusCommandFactory.OutputJson));
+        return TableFormatter.Format(document.RootElement, view);
     }
 
     public static string FormatSellers(string responseBody)
     {
         using var document = Parse(responseBody, "seller");
-        return FormatItems(document.RootElement, XboxPartnerCommandSupport.SellerTableView);
+        return TableFormatter.Format(document.RootElement, XboxPartnerCommandSupport.SellerTableView);
     }
 
     public static string FormatGames(string responseBody) =>
@@ -138,7 +185,7 @@ internal static class XboxPartnerTableFormatter
     /// </summary>
     internal sealed record TestAccountTable(string Text, IReadOnlyList<string> Notes);
 
-    public static TestAccountTable FormatTestAccountBatches(string responseBody, TestAccountBatchFilter filter, bool expired = false)
+    public static TestAccountTable FormatTestAccountBatches(string responseBody, TestAccountBatchFilter filter)
     {
         ArgumentNullException.ThrowIfNull(filter);
         TestAccountBatchesResponse response = XboxPartnerCommandSupport.DeserializeResponse<TestAccountBatchesResponse>(
@@ -159,7 +206,7 @@ internal static class XboxPartnerTableFormatter
             Columns = [.. fields.Select(field => field.Column)],
         };
         var rows = response.Batches.Select(batch => fields.Select(field => field.Cell(batch)).ToArray());
-        string kind = expired ? "expired " : string.Empty;
+        string kind = filter.Expired ? "expired " : string.Empty;
         return new(Render(view, rows), [FormattableString.Invariant($"Returned {response.Batches.Count} {kind}batches.")]);
     }
 
@@ -275,26 +322,6 @@ internal static class XboxPartnerTableFormatter
             "yyyy-MM-dd HH:mm:ss 'Z'",
             CultureInfo.InvariantCulture) ?? string.Empty;
 
-    private static string[] CreateConfigurationRow(
-        XboxLiveConfigurationSummary configuration)
-    {
-        if (string.IsNullOrWhiteSpace(configuration.Sandbox))
-        {
-            throw new InvalidDataException(
-                "The configuration response contained an invalid sandbox.");
-        }
-
-        return
-        [
-            configuration.Sandbox,
-            FormatVersion(configuration.WorkingVersion),
-            FormatTime(configuration.WorkingCommitTime),
-            FormatVersion(configuration.PublishedVersion),
-            FormatTime(configuration.PublishedCommitTime),
-            configuration.HasUnpublishedChanges ? "Yes" : "No",
-        ];
-    }
-
     private static string JoinDistinct(IEnumerable<JsonElement> games, string propertyName) =>
         string.Join(
             ", ",
@@ -345,30 +372,9 @@ internal static class XboxPartnerTableFormatter
         return items;
     }
 
-    private static string FormatItems(JsonElement root, TableView view)
-    {
-        var sellers = GetItems(root, view.Collection);
-        var rows = sellers.Select(seller => view.Columns
-            .Select(column => XboxPartnerCommandSupport.ReadString(
-                seller,
-                column.Property,
-                required: column.Property == "sellerId"))
-            .ToArray());
-
-        return Render(view, rows);
-    }
-
     /// <summary>
     /// Sanitizes extracted rows and lays them out with the PlayFab renderer.
     /// </summary>
-    /// <remarks>
-    /// Every gateway surface ends here, so the layout and the sanitizing exist once. Only the
-    /// extraction differs between them, and when the arithmetic was written twice the seller
-    /// tables were free to drift from every other table one fix at a time — which is exactly what
-    /// measuring widths in terminal cells would otherwise have done. A surface that renders
-    /// itself also silently skips <see cref="NormalizeCell"/>, so routing through here is what
-    /// keeps a gateway-supplied value from breaking the columns it is printed in.
-    /// </remarks>
     private static string Render(TableView view, IEnumerable<string[]> rows)
     {
         var normalized = rows

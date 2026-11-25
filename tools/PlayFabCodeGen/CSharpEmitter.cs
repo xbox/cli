@@ -279,6 +279,8 @@ public sealed class CSharpEmitter
             return s;
         }
 
-        return s[..(maxLength - 3)] + "...";
+        var limit = maxLength - 3;
+        var cut = s.LastIndexOf(' ', limit);
+        return s[..(cut > 0 ? cut : limit)].TrimEnd() + "...";
     }
 }

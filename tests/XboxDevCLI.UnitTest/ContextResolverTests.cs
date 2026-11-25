@@ -173,6 +173,16 @@ public sealed class ContextResolverTests : IDisposable
         Assert.Equal(TelemetryErrorTypes.NotConfirmed, commandEvent.ErrorType);
     }
 
+    /// <summary>A usage error, written to stderr without running the command, is recorded as one.</summary>
+    [Fact]
+    public async Task Main_RecordsAParseErrorAsUsage()
+    {
+        var commandEvent = await MainEventAsync("completion", "nope");
+
+        Assert.Equal(1, commandEvent.ExitCode);
+        Assert.Equal(TelemetryErrorTypes.Usage, commandEvent.ErrorType);
+    }
+
     /// <summary>A client ID no account has signed in with, so no cached token is found.</summary>
     private const string NoAccountClientId = "00000000-0000-0000-0000-000000000000";
 
@@ -206,10 +216,18 @@ public sealed class ContextResolverTests : IDisposable
     [Theory]
     [InlineData("config", "status")]
     [InlineData("config", "publish")]
+    [InlineData("config", "download")]
+    [InlineData("config", "save")]
     public async Task SandboxId_UsesFlagThenVariableThenSavedContext(string group, string action)
     {
         await SaveAsync("sandbox-id", Gateway, "TESTSB.42");
-        string[] args = ["xbl", group, action, "--scid", Scid];
+        string[] args =
+        [
+            "xbl", group, action, "--scid", Scid,
+            .. action == "download" ? ["--view", "draft", "--dest", "output"]
+                : action == "save" ? ["--file", "presence.xml"]
+                : Array.Empty<string>(),
+        ];
 
         var (_, saved, _) = await ResolveAsync(args);
         Assert.Empty(saved.Errors);
@@ -274,10 +292,40 @@ public sealed class ContextResolverTests : IDisposable
         await SaveAsync("title-id", Gateway, "invalid");
         string[] args = action == "download" ? ["--view", "draft", "--dest", "output"] : ["--file", "nsal.xml"];
         var (_, result, stderr) = await ResolveAsync(
-            ["xbl", "config", action, "--type", "account", .. args]);
+            ["xbl", "config", action, "--scope", "account", .. args]);
         Assert.Empty(result.Errors);
         Assert.Null(result.GetValue<string>("--title-id"));
         Assert.DoesNotContain("title-id", stderr);
+    }
+
+    [Theory]
+    [InlineData("save", "Using --sandbox-id TESTSB.42 from saved context.")]
+    [InlineData("download", "")]
+    public async Task SandboxId_FromSavedContext_IsAnnouncedByASaveButNotADownload(string action, string notice)
+    {
+        await SaveAsync("sandbox-id", Gateway, "TESTSB.42");
+
+        var (_, resolved, stderr) = await ResolveAsync(
+        [
+            "xbl", "config", action, "--scid", Scid,
+            .. action == "download" ? ["--view", "draft", "--dest", "output"] : new[] { "--file", "presence.xml" },
+        ]);
+
+        Assert.Equal("TESTSB.42", resolved.GetValue<string>("--sandbox-id"));
+        Assert.Equal(notice.Length == 0 ? "" : notice + Environment.NewLine, stderr);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("publish")]
+    public async Task TitleScope_IgnoresTheSavedSandbox(string action)
+    {
+        await SaveAsync("sandbox-id", Gateway, "XDKS.1");
+        var (_, result, stderr) = await ResolveAsync(
+            ["xbl", "config", action, "--scid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "--scope", "title"]);
+        Assert.Empty(result.Errors);
+        Assert.Null(result.GetValue<string>("--sandbox-id"));
+        Assert.DoesNotContain("sandbox-id", stderr);
     }
 
     private static string[] TitleCommandArgs(string family, string action)
@@ -394,7 +442,9 @@ public sealed class ContextResolverTests : IDisposable
     /// <summary>A value is parsed and validated as if typed, and fails naming where it came from.</summary>
     [Theory]
     [InlineData("XBOX_PLAYFAB_TITLE_ID", "ABC-12", "playfab title-data get", "XBOX_PLAYFAB_TITLE_ID: --playfab-title-id must contain only letters and digits.")]
-    [InlineData("XBOX_SANDBOX_ID", "Dev 1", "xbl config status --scid " + Scid, "XBOX_SANDBOX_ID: --sandbox-id must be non-empty and cannot contain whitespace.")]
+    [InlineData("XBOX_SANDBOX_ID", "Dev 1", "xbl config status --scid " + Scid, "XBOX_SANDBOX_ID: --sandbox-id must be non-empty and cannot contain whitespace or control characters.")]
+    [InlineData("XBOX_SANDBOX_ID", "XDKS\u001b[31m.1", "xbl config status --scid " + Scid, "XBOX_SANDBOX_ID: --sandbox-id must be non-empty and cannot contain whitespace or control characters.")]
+    [InlineData("XBOX_SELLER_ID", "1234567\u001b[31m", "game list", "XBOX_SELLER_ID: --seller-id must contain only printable ASCII characters.")]
     [InlineData("XBOX_SELLER_ID", "0", "xbl config status --sandbox-id Dev.1 --scid " + Scid, "XBOX_SELLER_ID: --seller-id")]
     public async Task BadValue_FailsNamingItsSource(string variable, string value, string command, string expected)
     {
@@ -598,21 +648,6 @@ public sealed class ContextResolverTests : IDisposable
             Assert.Equal("", stderr);
         }
 
-        Assert.Equal(0, _identityReads);
-    }
-
-    /// <summary>
-    /// A configuration that can't be read fails preparation, before any saved value or the
-    /// signed-in account is looked up.
-    /// </summary>
-    [Fact]
-    public async Task UnreadableConfiguration_FailsBeforeAnythingIsLookedUp()
-    {
-        using var unreadable = TestSettings.UseUnreadable();
-        var exception = await Assert.ThrowsAsync<InvalidDataException>(() =>
-            ResolveAsync("playfab", "title-data", "get"));
-
-        Assert.Equal(TestSettings.UnreadableMessage, exception.Message);
         Assert.Equal(0, _identityReads);
     }
 
@@ -861,8 +896,9 @@ public sealed class ContextResolverTests : IDisposable
         Assert.All(
             ContextResolver.FindAll(Program.BuildRootCommand()).Where(found => found.Option.Name == "--sandbox-id"),
             found => Assert.True(
-                found.Command.Name is "status" or "publish" &&
-                    found.Command.Parents.OfType<Command>().Any(parent => parent.Name == "config"),
+                (found.Command.Name is "status" or "diff" or "history" or "publish" or "download" or "save" &&
+                    found.Command.Parents.OfType<Command>().Any(parent => parent.Name == "config"))
+                || found.Command.Parents.OfType<Command>().Any(parent => parent.Name == "global-storage"),
                 found.Command.Name));
 
         Environment.SetEnvironmentVariable("XBOX_CONFIRM", "true");

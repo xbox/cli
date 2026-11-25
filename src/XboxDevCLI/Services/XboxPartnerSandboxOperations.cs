@@ -10,15 +10,15 @@ namespace XboxDevCLI.Services;
 internal sealed partial class XboxPartnerClient
 {
     /// <remarks>
-    /// <paramref name="onSending"/> is called immediately before the request is handed to the
-    /// network. A failure before it is called means the gateway never saw the request.
+    /// <paramref name="onSending"/> is called with the request's correlation ID immediately before the
+    /// request is handed to the network. A failure before it is called means the gateway never saw the request.
     /// </remarks>
     public Task<XboxPartnerSandboxCreationJob> CreateSandboxAsync(
         string baseUrl,
         string sellerId,
         CreateXboxSandboxRequest request,
         CancellationToken cancellationToken = default,
-        Action? onSending = null)
+        Action<string>? onSending = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         return SendJobAsync<XboxPartnerSandboxCreationJob>(
@@ -57,6 +57,24 @@ internal sealed partial class XboxPartnerClient
         ArgumentException.ThrowIfNullOrWhiteSpace(sandboxId);
         var uri = BuildRequestUri(baseUrl, $"xboxpartner/v1/sandboxes/{Uri.EscapeDataString(sandboxId)}");
         return (await SendAuthorizedAsync(uri, sellerId.Trim(), cancellationToken, HttpMethod.Get)).Body;
+    }
+
+    /// <summary>
+    /// Reads the moniker of the seller's XBOX account, the part of its sandbox IDs before the
+    /// period, such as <c>ABCDEF</c> in <c>ABCDEF.1</c>.
+    /// </summary>
+    public async Task<string> GetAccountMonikerAsync(
+        string baseUrl,
+        string sellerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sellerId);
+        var uri = BuildRequestUri(baseUrl, "xboxpartner/v1/xboxlive/account");
+        var body = (await SendAuthorizedAsync(uri, sellerId.Trim(), cancellationToken, HttpMethod.Get)).Body;
+        var account = DeserializeOperationResponse<XboxPartnerAccount>(body, "account");
+        return string.IsNullOrWhiteSpace(account.Moniker)
+            ? throw new InvalidDataException("The account response did not contain a 'moniker'.")
+            : account.Moniker;
     }
 
     /// <summary>
@@ -118,6 +136,10 @@ internal sealed record CreateXboxSandboxRequest(
     [property: JsonPropertyName("sandboxId")] string SandboxId,
     [property: JsonPropertyName("type")] string Type);
 
+/// <summary>The seller's account returned by <c>GET /xboxpartner/v1/xboxlive/account</c>.</summary>
+internal sealed record XboxPartnerAccount(
+    [property: JsonPropertyName("moniker")] string? Moniker);
+
 /// <summary>A sandbox returned by <c>GET /xboxpartner/v1/sandboxes/{sandboxId}</c>.</summary>
 internal sealed record XboxPartnerSandbox(
     [property: JsonPropertyName("sandboxId")] string? SandboxId,
@@ -165,6 +187,62 @@ internal static partial class XboxSandboxId
     private static readonly HashSet<string> GlobalSandboxes =
         new(["RETAIL", "CERT", "CERT.DEBUG", "READONLY", "MSFT.1"], StringComparer.Ordinal);
 
+    internal const string NumberFormatDescription =
+        "A sandbox number is 0 to 999 without a leading zero, such as 1, and selects that " +
+        "sandbox in the seller's account.";
+
+    /// <summary>
+    /// Whether <paramref name="value"/> is a sandbox number rather than a sandbox ID. Any input
+    /// of digits alone is a number, because no sandbox ID is digits without a moniker.
+    /// </summary>
+    internal static bool IsNumber(string? value)
+    {
+        var candidate = value?.Trim() ?? string.Empty;
+        return candidate.Length > 0 && candidate.All(char.IsAsciiDigit);
+    }
+
+    /// <summary>Returns the canonical form of a valid sandbox number, such as <c>1</c>.</summary>
+    internal static bool TryNormalizeNumber(string? value, out string normalized)
+    {
+        var candidate = value?.Trim() ?? string.Empty;
+        if (NumberPattern().IsMatch(candidate))
+        {
+            normalized = candidate;
+            return true;
+        }
+
+        normalized = string.Empty;
+        return false;
+    }
+
+    /// <summary>Whether a sandbox number is reserved, so it can't name a sandbox to create.</summary>
+    internal static bool IsReservedNumber(string number) =>
+        "." + number == ReservedIsolatedSuffix;
+
+    /// <summary>
+    /// Returns the ID with the lowest number from 0 to 999 under <paramref name="moniker"/> that no
+    /// existing ID uses and that can be created, or <see langword="null"/> when there's none.
+    /// </summary>
+    internal static string? LowestFreeId(string moniker, IEnumerable<string?> existingIds)
+    {
+        var prefix = moniker.Trim().ToUpperInvariant() + ".";
+        var used = existingIds
+            .Select(id => id?.Trim().ToUpperInvariant())
+            .Where(id => id is not null && id.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(id => id![prefix.Length..])
+            .ToHashSet(StringComparer.Ordinal);
+        for (var number = 0; number <= 999; number++)
+        {
+            var suffix = number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!used.Contains(suffix) && TryNormalizeForCreate($"{moniker.Trim()}.{suffix}", out var id))
+            {
+                return id;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Returns the upper-case form of an ID that can be read, including global sandboxes.</summary>
     internal static bool TryNormalizeForRead(string? value, out string normalized) =>
         TryNormalize(value, ReadPattern(), out normalized);
@@ -202,4 +280,7 @@ internal static partial class XboxSandboxId
 
     [GeneratedRegex(@"^[A-Za-z0-9]{4,60}\.(0|[1-9][0-9]{0,2})\z", RegexOptions.CultureInvariant)]
     private static partial Regex CreatePattern();
+
+    [GeneratedRegex(@"^(0|[1-9][0-9]{0,2})\z", RegexOptions.CultureInvariant)]
+    private static partial Regex NumberPattern();
 }

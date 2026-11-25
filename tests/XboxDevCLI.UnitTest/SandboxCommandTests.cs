@@ -318,6 +318,49 @@ public class SandboxCommandTests
         }
     }
 
+    private const string FilterPage =
+        """{"sandboxes":[{"sandboxId":"RETAIL","type":"Shared","sellerId":null,"global":true},{"sandboxId":"ABCDEF.1","type":"Shared","sellerId":"seller-1","global":false},{"sandboxId":"ABCDEF.58","type":"Isolated","sellerId":"seller-1","global":false}]}""";
+
+    [Theory]
+    [InlineData(new string[0], "RETAIL,ABCDEF.1,ABCDEF.58")]
+    [InlineData(new[] { "--owned" }, "ABCDEF.1,ABCDEF.58")]
+    [InlineData(new[] { "--type", "isolated" }, "ABCDEF.58")]
+    [InlineData(new[] { "--owned", "--type", "shared" }, "ABCDEF.1")]
+    public async Task List_FiltersKeepOnlyMatchingSandboxes(string[] filters, string expected)
+    {
+        var result = await InvokeAsync(Handler(FilterPage), ["sandbox", "list", .. filters, "--output", "json-compact"]);
+
+        Assert.Equal(0, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal(
+            expected,
+            string.Join(',', document.RootElement.GetProperty("sandboxes").EnumerateArray()
+                .Select(sandbox => sandbox.GetProperty("sandboxId").GetString())));
+    }
+
+    [Fact]
+    public async Task List_FiltersApplyToTheTable()
+    {
+        var result = await InvokeAsync(Handler(FilterPage), ["sandbox", "list", "--owned", "--output", "table"]);
+
+        Assert.Equal(0, result.ExitCode);
+        var lines = result.Stdout.TrimEnd().Split(Environment.NewLine);
+        Assert.Equal(4, lines.Length);
+        Assert.Contains("ABCDEF.1", lines[2]);
+        Assert.Contains("ABCDEF.58", lines[3]);
+        Assert.DoesNotContain("RETAIL", result.Stdout);
+    }
+
+    [Fact]
+    public async Task List_NoMatchingSandboxIsAnEmptyArray()
+    {
+        var page = """{"sandboxes":[{"sandboxId":"RETAIL","type":"Shared","sellerId":null,"global":true}]}""";
+        var result = await InvokeAsync(Handler(page), ["sandbox", "list", "--owned", "--output", "json-compact"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("""{"sandboxes":[]}""", result.Stdout.Trim());
+    }
+
     [Theory]
     [InlineData("json-compact")]
     [InlineData("table")]
@@ -511,7 +554,7 @@ public class SandboxCommandTests
         Assert.Equal(accepted ? 0 : 1, result.ExitCode);
         Assert.Equal(accepted ? 2 : 0, handler.Requests.Count);
         Assert.Contains(
-            "Creating the Shared sandbox 'ABCDEF.1' under seller seller-1 cannot be undone from this CLI.",
+            "The Shared sandbox 'ABCDEF.1' under seller seller-1 cannot be deleted after it is created.",
             result.Stderr);
         Assert.Equal(interactive, result.Stderr.Contains("Create this sandbox? [y/N]: ", StringComparison.Ordinal));
         if (!accepted)
@@ -550,7 +593,8 @@ public class SandboxCommandTests
         Assert.Equal(SandboxCommandFactory.JobFailedExitCode, result.ExitCode);
         Assert.Equal(Failed, result.Stdout.Trim());
         Assert.Equal(2, handler.Requests.Count);
-        Assert.Contains("completed without creating sandbox ABCDEF.1", result.Stderr);
+        Assert.Contains("Sandbox creation job a1b2c3d4-0000-4000-8000-000000000001 failed for sandbox ABCDEF.1", result.Stderr);
+        Assert.DoesNotContain("To try again", result.Stderr);
         Assert.DoesNotContain(Failed, result.Stderr);
     }
 
@@ -583,7 +627,7 @@ public class SandboxCommandTests
         var handler = new XboxPartnerHttpMessageHandler(Response("{}", status));
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Single(handler.Requests);
         Assert.Contains("it is unknown whether sandbox ABCDEF.1 was created. Do not resubmit.", result.Stderr);
@@ -598,7 +642,7 @@ public class SandboxCommandTests
         var handler = new XboxPartnerHttpMessageHandler(Response("{}", HttpStatusCode.ServiceUnavailable));
         var result = await InvokeAsync(handler, ["--profile", "default", .. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Contains(
             "Check whether it exists with: xbox --profile default sandbox get ABCDEF.1 --seller-id seller-1 --base-url https://gateway.example",
             result.Stderr);
@@ -643,7 +687,7 @@ public class SandboxCommandTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Empty(handler.Requests);
-        Assert.Contains("must not contain line breaks", result.Stderr);
+        Assert.Contains("--seller-id must contain only printable ASCII characters", result.Stderr);
         Assert.DoesNotContain("Do not resubmit", result.Stderr);
         Assert.Equal(0, auth.TokenRequests);
     }
@@ -673,7 +717,7 @@ public class SandboxCommandTests
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
         // A job ID that isn't a GUID can't be followed, so the outcome is unknown and it isn't polled.
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Single(handler.Requests);
         Assert.Contains("Sandbox creation job submitted: job[2JFAKE (Correlation ID: corr]0;title)", result.Stderr);
@@ -687,17 +731,17 @@ public class SandboxCommandTests
     [Fact]
     public async Task Create_PollingFailureReasonPhraseIsWrittenWithoutControlCharacters()
     {
-        var failure = new HttpResponseMessage(HttpStatusCode.BadGateway)
+        var failure = new HttpResponseMessage(HttpStatusCode.InternalServerError)
         {
             Content = new StringContent("{}"),
-            ReasonPhrase = "Bad\u001b[2J\u0007 Gateway",
+            ReasonPhrase = "Internal\u001b[2J\u0007 Server Error",
         };
         var handler = new XboxPartnerHttpMessageHandler(Response(Accepted), failure);
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
         Assert.Equal(SandboxCommandFactory.WaitEndedExitCode, result.ExitCode);
         Assert.Contains("its status could not be read.", result.Stderr);
-        Assert.Contains("(Bad[2J Gateway)", result.Stderr);
+        Assert.Contains("(Internal[2J Server Error)", result.Stderr);
         Assert.DoesNotContain('\u001b', result.Stderr);
         Assert.DoesNotContain('\u0007', result.Stderr);
     }
@@ -726,7 +770,7 @@ public class SandboxCommandTests
     [Fact]
     public async Task Create_PollingFailureCorrelationIdIsWrittenWithoutControlCharacters()
     {
-        var failure = new HttpResponseMessage(HttpStatusCode.BadGateway) { Content = new StringContent("{}") };
+        var failure = new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("{}") };
         failure.Headers.TryAddWithoutValidation("x-ms-correlation-id", "poll\u001b[31m\u0007");
         var handler = new XboxPartnerHttpMessageHandler(Response(Accepted), failure);
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
@@ -751,7 +795,7 @@ public class SandboxCommandTests
         var handler = Handler("not-json\u001b[31m\u0007\r\nFAKE");
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("not-json[31m", result.Stderr);
         Assert.DoesNotContain('\u001b', result.Stderr);
@@ -812,19 +856,54 @@ public class SandboxCommandTests
         var handler = new RoutingHttpHandler(_ => throw new HttpRequestException("The connection was reset."));
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("it is unknown whether sandbox ABCDEF.1 was created. Do not resubmit.", result.Stderr);
+        Assert.Contains(
+            $"x-ms-correlation-id: {handler.Requests[0].Header("x-ms-correlation-id")}", result.Stderr, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Create_CancellationAfterSendingIsUnknown()
+    public async Task Create_PollTimeoutPrintsThePollsCorrelationId()
     {
-        var handler = new RoutingHttpHandler(_ => throw new OperationCanceledException("Simulated Ctrl+C after sending."));
+        var handler = new RoutingHttpHandler(request => request.Method == HttpMethod.Post
+            ? Response(Accepted)
+            : throw new TaskCanceledException("timed out"));
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(SandboxCommandFactory.WaitEndedExitCode, result.ExitCode);
+        string? poll = handler.Requests[^1].Header("x-ms-correlation-id");
+        Assert.True(Guid.TryParse(poll, out _));
+        Assert.Contains($"x-ms-correlation-id: {poll}{Environment.NewLine}Request timed out.", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_CtrlCAfterSendingWritesTheSentCorrelationId()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new RoutingHttpHandler(_ =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"], cancellationToken: cancellation.Token);
+
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Contains("it is unknown whether sandbox ABCDEF.1 was created. Do not resubmit.", result.Stderr);
+        Assert.Contains(
+            $"x-ms-correlation-id: {Assert.Single(handler.Requests).Header("x-ms-correlation-id")}{Environment.NewLine}Request canceled.",
+            result.Stderr,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Create_TimeoutAfterSendingIsUnknown()
+    {
+        var handler = new RoutingHttpHandler(_ => throw new OperationCanceledException("Simulated timeout after sending."));
+        var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
+
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("it is unknown whether sandbox ABCDEF.1 was created. Do not resubmit.", result.Stderr);
@@ -838,7 +917,7 @@ public class SandboxCommandTests
         var handler = Handler($$"""{"jobId":"{{jobId}}","status":"notStarted","result":"pending"}""");
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("sandbox creation job response was invalid", result.Stderr);
@@ -850,7 +929,7 @@ public class SandboxCommandTests
     {
         var result = await InvokeAsync(Handler("""{"status":"notStarted"}"""), [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Contains("Do not resubmit", result.Stderr);
     }
@@ -903,7 +982,7 @@ public class SandboxCommandTests
         var handler = Handler(completedJob);
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
-        Assert.Equal(SandboxCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Empty(result.Stdout);
         Assert.Single(handler.Requests);
         Assert.Contains("sandbox creation job response was invalid", result.Stderr);
@@ -921,11 +1000,26 @@ public class SandboxCommandTests
         Assert.Single(handler.Requests);
     }
     [Fact]
+    public async Task Create_RetriesABriefStatusReadFailureWithoutResubmitting()
+    {
+        var handler = new XboxPartnerHttpMessageHandler(
+            Response(Accepted),
+            Response("""{"detail":"Down."}""", HttpStatusCode.BadGateway),
+            Response(Succeeded),
+            Response(Sandbox));
+        var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm", "--output", "json-compact"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(Sandbox, result.Stdout.Trim());
+        Assert.Single(handler.Requests, request => request.Method == HttpMethod.Post);
+    }
+
+    [Fact]
     public async Task Create_PollingFailureReportsRecovery()
     {
         var handler = new XboxPartnerHttpMessageHandler(
             Response(Accepted),
-            Response("""{"detail":"Down."}""", HttpStatusCode.BadGateway));
+            Response("""{"detail":"Down."}""", HttpStatusCode.InternalServerError));
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
         Assert.Equal(SandboxCommandFactory.WaitEndedExitCode, result.ExitCode);
@@ -934,7 +1028,7 @@ public class SandboxCommandTests
         Assert.Contains("The sandbox was submitted, but its status could not be read", result.Stderr);
         Assert.Contains("Check whether it exists with: xbox sandbox get ABCDEF.1", result.Stderr);
         Assert.Single(result.Stderr.Split(Environment.NewLine),
-            line => line.Contains("HTTP 502", StringComparison.Ordinal));
+            line => line.Contains("HTTP 500", StringComparison.Ordinal));
         Assert.Contains("Error detail: Down.", result.Stderr, StringComparison.Ordinal);
     }
 
@@ -995,7 +1089,8 @@ public class SandboxCommandTests
     [Fact]
     public async Task Create_CancellationWhileWaitingStopsWithoutResubmitting()
     {
-        // The submission is answered; every later request is interrupted.
+        // The submission is answered; every later request is interrupted, which is retried as a
+        // transient read failure until the limit.
         var requests = 0;
         var handler = new RoutingHttpHandler(_ => ++requests == 1
             ? Response(Running)
@@ -1003,7 +1098,8 @@ public class SandboxCommandTests
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
 
         Assert.Equal(SandboxCommandFactory.WaitEndedExitCode, result.ExitCode);
-        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(1 + XboxPartnerPoller.MaxConsecutiveReadFailures, handler.Requests.Count);
+        Assert.Single(handler.Requests, request => request.Method == HttpMethod.Post);
         Assert.Empty(result.Stdout);
         Assert.Contains("Stopped waiting for job a1b2c3d4-0000-4000-8000-000000000001", result.Stderr);
     }
@@ -1120,6 +1216,290 @@ public class SandboxCommandTests
         }
     }
 
+    [Fact]
+    public async Task Get_NumberReadsTheAccountMonikerWithTheSameSeller()
+    {
+        var handler = Handler("""{"moniker":"abcdef"}""", Sandbox);
+        var result = await InvokeAsync(handler, ["sandbox", "get", "1", "--output", "json-compact", "--verbose"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Sandbox number 1 is sandbox ABCDEF.1.", result.Stderr);
+        Assert.Equal(Sandbox, result.Stdout.Trim());
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+        Assert.Equal("/xboxpartner/v1/xboxlive/account", handler.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("/xboxpartner/v1/sandboxes/ABCDEF.1", handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal("seller-1", Assert.Single(request.Headers["X-DeveloperAccountId"])));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Create_NumberIsResolvedBeforeConfirmation(bool confirmed)
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""", Accepted, Succeeded, Sandbox);
+        string[] args = confirmed ? ["sandbox", "create", "2", "--confirm"] : ["sandbox", "create", "2"];
+        var result = await InvokeAsync(handler, args);
+
+        Assert.Equal("/xboxpartner/v1/xboxlive/account", handler.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Contains("Sandbox number 2 is sandbox ABCDEF.2.", result.Stderr);
+        if (confirmed)
+        {
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal("""{"sandboxId":"ABCDEF.2","type":"Shared"}""", handler.Requests[1].Body);
+        }
+        else
+        {
+            Assert.Equal(1, result.ExitCode);
+            Assert.Single(handler.Requests);
+            Assert.Contains("The Shared sandbox 'ABCDEF.2' under seller seller-1 cannot be deleted", result.Stderr);
+        }
+    }
+
+    [Theory]
+    [InlineData("get", "1000", "Invalid sandbox number '1000'")]
+    [InlineData("get", "01", "Invalid sandbox number '01'")]
+    [InlineData("create", "007", "Invalid sandbox number '007'")]
+    [InlineData("create", "58", "Sandbox number 58 is reserved")]
+    public async Task InvalidSandboxNumber_FailsBeforeAuthentication(string command, string number, string message)
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""", Sandbox);
+        var auth = CreateAuth();
+        var result = await InvokeAsync(handler, ["sandbox", command, number, "--confirm"], auth: auth);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(message, result.Stderr);
+        Assert.Empty(handler.Requests);
+        Assert.Equal(0, auth.TokenRequests);
+    }
+
+    [Fact]
+    public async Task Get_NumberFiftyEightReadsTheIsolatedSandbox()
+    {
+        var handler = Handler("""{"moniker":"ABCD"}""", """{"sandboxId":"ABCD.58","type":"Isolated","sellerId":"seller-1"}""");
+        var result = await InvokeAsync(handler, ["sandbox", "get", "58"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("/xboxpartner/v1/sandboxes/ABCD.58", handler.Requests[1].RequestUri!.AbsolutePath);
+    }
+
+    [Theory]
+    [InlineData("get")]
+    [InlineData("create")]
+    public async Task Number_MonikerReadFailureStopsWithGuidance(string command)
+    {
+        var handler = new XboxPartnerHttpMessageHandler(
+            Response("""{"title":"Problem","detail":"XBOX services returned HTTP 404."}""", HttpStatusCode.NotFound));
+        var result = await InvokeAsync(handler, ["sandbox", command, "2", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Single(handler.Requests);
+        Assert.Contains("Sandbox number 2 could not be resolved", result.Stderr);
+        Assert.Contains("XBOX services returned HTTP 404.", result.Stderr);
+        Assert.Contains("xbox sandbox list --seller-id seller-1 --base-url https://gateway.example", result.Stderr);
+        Assert.DoesNotContain("Do not resubmit", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Number_NotSignedInDoesNotSuggestAFullId()
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""");
+        var result = await InvokeAsync(handler, ["sandbox", "get", "2"], auth: new FakeAuthenticationService(token: null));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(handler.Requests);
+        Assert.Contains("No cached authentication token", result.Stderr);
+        Assert.DoesNotContain("Pass the full sandbox ID", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Number_MonikerReadTimeoutStopsWithGuidance()
+    {
+        var handler = new XboxPartnerHttpMessageHandler(() => throw new TaskCanceledException("The request timed out."));
+        var result = await InvokeAsync(handler, ["sandbox", "create", "2", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains("Sandbox number 2 could not be resolved", result.Stderr);
+    }
+
+    [Theory]
+    [InlineData("""{}""")]
+    [InlineData("null")]
+    public async Task Number_AccountWithoutAMonikerFails(string body)
+    {
+        var handler = Handler(body);
+        var result = await InvokeAsync(handler, ["sandbox", "create", "2", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains("Sandbox number 2 could not be resolved", result.Stderr);
+    }
+
+    [Theory]
+    [InlineData("UNDEFINED", "2", "'UNDEFINED.2'")]
+    [InlineData("MSFT", "1", "'MSFT.1'")]
+    [InlineData("ABC", "1", "'ABC.1'")]
+    public async Task Create_NumberThatResolvesToAnUncreatableIdIsNotSent(string moniker, string number, string resolved)
+    {
+        var handler = Handler($$"""{"moniker":"{{moniker}}"}""", Accepted);
+        var result = await InvokeAsync(handler, ["sandbox", "create", number, "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains($"resolves to {resolved} for seller seller-1, which isn't a valid sandbox ID here.", result.Stderr);
+    }
+
+    [Fact]
+    public void LowestFreeId_SkipsTakenNumbersAndTheReservedNumber()
+    {
+        var taken = Enumerable.Range(0, 58).Select(number => $"abcdef.{number}").Append("ABCDEF.59");
+
+        Assert.Equal("ABCDEF.60", XboxSandboxId.LowestFreeId("ABCDEF", taken));
+        Assert.Equal("ABCDEF.1", XboxSandboxId.LowestFreeId("abcdef", ["ABCDEF.0", "ABCDEF.2", "ABCDEFG.1", "XYZ.1", null]));
+        Assert.Null(XboxSandboxId.LowestFreeId("ABCDEF", Enumerable.Range(0, 1000).Select(number => $"ABCDEF.{number}")));
+    }
+
+    [Theory]
+    [InlineData(new string[0], "Pass a sandbox ID or number, or --free-number")]
+    [InlineData(new[] { "2", "--free-number" }, "--free-number can't be combined with a sandbox ID.")]
+    public async Task Create_NeedsExactlyOneOfAnIdAndFreeNumber(string[] extra, string message)
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", .. extra, "--confirm"]);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(message, result.Stderr);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task Number_RefusedMonikerReadDoesNotSuggestAFullId(HttpStatusCode status)
+    {
+        var handler = new XboxPartnerHttpMessageHandler(
+            Response("""{"title":"Problem","detail":"Not authorized."}""", status));
+        var result = await InvokeAsync(handler, ["sandbox", "get", "2"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains("Check that you're signed in and have access to seller seller-1.", result.Stderr);
+        Assert.DoesNotContain("Pass the full sandbox ID", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberStopsWhenTheMonikerCantFormACreatableId()
+    {
+        var handler = Handler("""{"moniker":"UNDEFINED"}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains("'UNDEFINED', doesn't form a sandbox ID that can be created.", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberWithoutConfirmationPinsTheChosenIdInTheRerun()
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""", """{"sandboxes":[]}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(
+            "Re-run with: xbox sandbox create ABCDEF.0 --confirm --seller-id seller-1 --base-url https://gateway.example",
+            result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberUsesTheLowestFreeNumberAcrossEveryPage()
+    {
+        var handler = Handler(
+            """{"moniker":"ABCDEF"}""",
+            """{"sandboxes":[{"sandboxId":"RETAIL","global":true},{"sandboxId":"ABCDEF.0"}],"continuationToken":"t1"}""",
+            """{"sandboxes":[{"sandboxId":"ABCDEF.1"},{"sandboxId":"XYZ.2"}]}""",
+            Accepted, Succeeded, """{"sandboxId":"ABCDEF.2","type":"Shared","sellerId":"seller-1"}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm", "--output", "json-compact"]);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("""{"sandboxId":"ABCDEF.2","type":"Shared","sellerId":"seller-1"}""", result.Stdout.Trim());
+        Assert.Contains("Sandbox number 2 is the seller's lowest free number, so the new sandbox is ABCDEF.2.", result.Stderr);
+        Assert.Equal("/xboxpartner/v1/xboxlive/account", handler.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("/xboxpartner/v1/sandboxes", handler.Requests[1].RequestUri!.AbsolutePath);
+        Assert.Equal("?continuationToken=t1", handler.Requests[2].RequestUri!.Query);
+        Assert.Equal("""{"sandboxId":"ABCDEF.2","type":"Shared"}""", handler.Requests[3].Body);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal("seller-1", Assert.Single(request.Headers["X-DeveloperAccountId"])));
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberNamesTheChosenIdInTheConfirmation()
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""", """{"sandboxes":[]}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("The Shared sandbox 'ABCDEF.0' under seller seller-1 cannot be deleted", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberStopsWhenEveryNumberIsTaken()
+    {
+        var sandboxes = string.Join(",", Enumerable.Range(0, 1000).Select(number => $$"""{"sandboxId":"ABCDEF.{{number}}"}"""));
+        var handler = Handler("""{"moniker":"ABCDEF"}""", $$"""{"sandboxes":[{{sandboxes}}]}""");
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("Seller seller-1 has no free sandbox number", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberStopsWhenTheSandboxesCantBeListed()
+    {
+        var handler = new XboxPartnerHttpMessageHandler(
+            Response("""{"moniker":"ABCDEF"}"""),
+            Response("""{"title":"Problem","detail":"Gateway detail."}""", HttpStatusCode.ServiceUnavailable));
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("because the sandboxes of seller seller-1 could not be listed", result.Stderr);
+        Assert.Contains("Gateway detail.", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberStopsWhenTheMonikerCantBeRead()
+    {
+        var handler = new XboxPartnerHttpMessageHandler(
+            Response("""{"title":"Problem","detail":"XBOX services returned HTTP 404."}""", HttpStatusCode.NotFound));
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm"]);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Single(handler.Requests);
+        Assert.Contains("A sandbox number could not be chosen, because the account moniker", result.Stderr);
+        Assert.Contains("xbox sandbox list --seller-id seller-1 --base-url https://gateway.example", result.Stderr);
+        Assert.DoesNotContain("Pass a sandbox number", result.Stderr);
+    }
+
+    [Fact]
+    public async Task Create_FreeNumberDoesNotRetryAFailedJob()
+    {
+        var handler = Handler("""{"moniker":"ABCDEF"}""", """{"sandboxes":[]}""", Accepted, Failed);
+        var result = await InvokeAsync(handler, ["sandbox", "create", "--free-number", "--confirm"]);
+
+        Assert.Equal(SandboxCommandFactory.JobFailedExitCode, result.ExitCode);
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.Contains(
+            "To try again without creating a second sandbox, run: " +
+            "xbox sandbox create ABCDEF.0 --confirm --seller-id seller-1 --base-url https://gateway.example",
+            result.Stderr);
+    }
+
     private static XboxPartnerHttpMessageHandler Handler(params string[] responses) =>
         new(responses.Select(response => Response(response)).ToArray());
 
@@ -1147,7 +1527,8 @@ public class SandboxCommandTests
         bool addScope = true,
         bool throughMain = false,
         string? stateDirectory = null,
-        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
+        CancellationToken cancellationToken = default)
     {
         auth ??= CreateAuth();
         using var httpClient = new HttpClient(handler);
@@ -1196,7 +1577,7 @@ public class SandboxCommandTests
                 : await Program.ResolveContextAsync(root.Parse(args.ToArray(), Program.NoResponseFileConfig), args);
             var exitCode = throughMain
                 ? await Program.Main(args.ToArray())
-                : parseResult is null ? 1 : await parseResult.InvokeAsync();
+                : parseResult is null ? 1 : await parseResult.InvokeAsync(cancellationToken: cancellationToken);
             return new CapturedInvocation(exitCode, stdout.ToString(), stderr.ToString());
         }
         finally

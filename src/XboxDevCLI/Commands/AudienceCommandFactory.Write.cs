@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 using System.CommandLine;
-using System.Net;
+using System.Globalization;
+using System.Net.Mail;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Configuration;
@@ -20,13 +21,23 @@ internal static partial class AudienceCommandFactory
     /// <summary>The longest audience name, in UTF-16 code units.</summary>
     internal const int MaxNameLength = 200;
 
+    /// <summary>The most members-file problems an error lists before summarizing the rest.</summary>
+    private const int MaxListedProblems = 10;
+
+    /// <summary>The most added or removed members the confirmation prompt lists; --dry-run lists all.</summary>
+    internal const int MaxPromptedMembers = 10;
+
     private const string ExitCodesNote =
         "Exit codes: 0 written; 1 not written (rejected, or failed before the request was sent); 3 the request " +
         "was sent but its outcome is unknown, and stderr shows its correlation ID. The request is never retried.";
 
     private const string MembersFileNote =
-        "A members file is UTF-8 text with one email address per line. " +
-        "Spaces around each line and blank lines are ignored, and case is kept. It can list up to 1000 members.";
+        "A members file is UTF-8 or UTF-16 text with one email address per line. " +
+        "Blank lines and spaces around each line are ignored. " +
+        "A member listed more than once, even with different capitalization, is sent once, as first written. " +
+        "It can list up to 1000 members. " +
+        "Each line must be a plain email address, without a name, angle brackets, or invisible characters. " +
+        "If a line isn't, the command sends nothing and names the lines to fix.";
 
     private const string PermissionNote =
         "Requires Partner Center's customer groups Write permission for the seller.";
@@ -92,7 +103,9 @@ internal static partial class AudienceCommandFactory
             Stage: CommandStage.Experimental,
             Scope: "Creates an audience under the seller selected by --seller-id, XBOX_SELLER_ID, or 'context set'.",
             Output: "The created audience as a JSON object as the service returns it, such as name, id, members, "
-                + "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, and TYPE columns. "
+                + "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, TYPE, MEMBERS, and MEMBER columns, "
+                + "with a row per member, where MEMBERS is the number of members returned. An audience with no "
+                + "members has one row, with 0 under MEMBERS and '-' under MEMBER. "
                 + "Nothing is written to stdout when the create fails or its outcome is unknown.",
             SafetyDetails: "Creates an audience in Partner Center. The CLI can't delete audiences. Requires "
                 + "--confirm (--yes, -y) or terminal confirmation. The request is sent once and never retried. "
@@ -111,7 +124,7 @@ internal static partial class AudienceCommandFactory
                 "After exit 3, don't create the audience again until you've checked whether it exists: stderr "
                     + "shows an 'xbox audience list' command to look for it.",
             ],
-            Table: XboxPartnerCommandSupport.AudienceRecordTableView));
+            Table: XboxPartnerCommandSupport.AudienceDetailTableView));
     }
 
     private static Command CreateUpdateCommand(
@@ -124,11 +137,15 @@ internal static partial class AudienceCommandFactory
             "File listing the audience's complete new member list, one per line. An empty file removes every "
                 + "member. Without it, the members are kept.");
         var confirm = CreateConfirmOption("Confirm changing the audience without prompting.");
+        var dryRun = new Option<bool>("--dry-run")
+        {
+            Description = "Show the changes the update would make as JSON, without making them.",
+        };
         var seller = XboxPartnerCommandSupport.CreateSellerIdOption();
         var baseUrl = XboxPartnerCommandSupport.CreateBaseUrlOption();
         var command = new Command("update", "Rename a known-user audience or replace its member list")
         {
-            audienceId, name, membersFile, confirm, seller, baseUrl,
+            audienceId, name, membersFile, confirm, dryRun, seller, baseUrl,
         };
         command.Validators.Add(commandResult =>
         {
@@ -138,31 +155,57 @@ internal static partial class AudienceCommandFactory
             }
         });
         command.SetAction((ParseResult result, CancellationToken cancellationToken) =>
-            ExecuteAsync(
+        {
+            var preview = result.GetValue(dryRun);
+            if (preview && OutputOptions.From(result).IsTable)
+            {
+                Console.Error.WriteLine("--dry-run writes JSON only. Omit --output table, or pass --output json.");
+                return Task.FromResult(1);
+            }
+
+            return ExecuteAsync(
                 result, seller, baseUrl, clientFactory,
                 async (client, url, sellerId) =>
                 {
                     var id = result.GetValue(audienceId)!;
                     var newName = result.GetValue(name);
                     var members = result.GetValue(membersFile) is { } path ? ReadMembersFile(path) : null;
-                    var changes = new List<string>();
-                    if (newName is not null)
-                    {
-                        changes.Add($"renaming it to '{XboxPartnerCommandSupport.ForTerminal(newName)}'");
-                    }
+                    var confirmed = IsConfirmed(result, confirm);
+                    var target = $"audience {XboxPartnerCommandSupport.ForTerminal(id)} under seller "
+                        + XboxPartnerCommandSupport.ForTerminal(sellerId);
+                    string summary;
 
-                    if (members is not null)
+                    // Only a dry run or a terminal prompt reads the audience, so members are shown
+                    // only where they were asked for, never in a script's stderr.
+                    if (preview || (!confirmed && dependencies.IsInteractive()))
                     {
-                        changes.Add(members.Count == 0
-                            ? "removing every member"
-                            : $"replacing its members with {CountMembers(members.Count)}");
+                        Program.WriteVerbose(result.GetValue(Program.VerboseOption),
+                            () => $"Reading {target} to preview the update.");
+                        JsonObject current;
+                        using (RequestProgress.Start("Reading audience"))
+                        {
+                            current = await client.GetAudienceAsync(url, sellerId, id, cancellationToken);
+                        }
+
+                        var changes = UpdatePreview.From(id, current, newName, members);
+                        if (preview)
+                        {
+                            Write(changes.ToJson(), OutputOptions.From(result));
+                            Console.Error.WriteLine($"Dry run: {target} wasn't changed.");
+                            return 0;
+                        }
+
+                        summary = changes.Describe(target);
+                    }
+                    else
+                    {
+                        summary = DescribeUpdateWithoutReading(target, newName, members);
                     }
 
                     if (!await PlaytestCommandFactory.ConfirmAsync(
-                        IsConfirmed(result, confirm),
+                        confirmed,
                         dependencies,
-                        $"Changing audience {XboxPartnerCommandSupport.ForTerminal(id)} under seller "
-                            + $"{XboxPartnerCommandSupport.ForTerminal(sellerId)}: {string.Join(" and ", changes)}.",
+                        summary,
                         "Change this audience?",
                         "Audience update canceled.",
                         cancellationToken))
@@ -187,20 +230,28 @@ internal static partial class AudienceCommandFactory
                             url, sellerId, id, newName, members, correlationId, cancellationToken, onSending),
                         cancellationToken);
                 },
-                cancellationToken));
+                cancellationToken);
+        });
         return command.WithMetadata(new CommandMetadata(
             Safety: CommandSafety.RemoteMutation,
             Stage: CommandStage.Experimental,
             Scope: "One audience of the seller selected by --seller-id, XBOX_SELLER_ID, or 'context set'.",
             Output: "The updated audience as a JSON object as the service returns it, such as name, id, members, "
-                + "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, and TYPE columns. "
-                + "Nothing is written to stdout when the update fails or its outcome is unknown.",
+                + "dnaTags, sellerId, groupType, and groupUsage. Table output has ID, NAME, TYPE, MEMBERS, and MEMBER columns, "
+                + "with a row per member, where MEMBERS is the number of members returned. An audience with no "
+                + "members has one row, with 0 under MEMBERS and '-' under MEMBER. "
+                + "Nothing is written to stdout when the update fails or its outcome is unknown. --dry-run writes "
+                + "JSON only: the id, name (current and new) with --name, and members (current and new counts, "
+                + "added, and removed) with --members-file.",
             SafetyDetails: "Renames the audience, replaces its complete member list in Partner Center, or both. With "
                 + "--members-file, members not in the file are removed, and an empty file removes every member. "
-                + "The type isn't changed. Requires --confirm (--yes, -y) or terminal confirmation. The request is "
-                + "sent once and never retried. Agent approval is still required.",
+                + "The type isn't changed. Requires --confirm (--yes, -y) or terminal confirmation. In a terminal "
+                + "without --confirm, it reads the audience first and shows the rename and the members added and "
+                + "removed before it asks. The request is sent once and never retried. Agent approval is still "
+                + "required. --dry-run only reads the audience and never changes it.",
             Examples:
             [
+                "xbox audience update 1152921504606846976 --members-file testers.txt --dry-run",
                 "xbox audience update 1152921504606846976 --members-file testers.txt --confirm",
                 "xbox audience update 1152921504606846976 --name \"Nod Arena beta testers\" --confirm",
                 "xbox audience update 1152921504606846976 --members-file testers.txt --seller-id 1234567 --output table",
@@ -209,14 +260,119 @@ internal static partial class AudienceCommandFactory
             [
                 MembersFileNote,
                 "Pass --name, --members-file, or both; what you leave out is kept. Only known-user audiences can be "
-                    + "updated. To add or remove one member, read the list with 'xbox audience get', change it, and "
-                    + "pass the whole list.",
+                    + "updated. To add or remove one member, save the list with 'xbox audience get --members-only', "
+                    + "change it, and pass the whole list.",
                 StoredMembersNote,
                 PermissionNote,
                 LastWriterNote,
                 ExitCodesNote,
+                "--dry-run exits 0 when it has shown the changes. The service doesn't check the update.",
             ],
-            Table: XboxPartnerCommandSupport.AudienceRecordTableView));
+            Table: XboxPartnerCommandSupport.AudienceDetailTableView));
+    }
+
+    private static string DescribeUpdateWithoutReading(string target, string? newName, IReadOnlyList<string>? members)
+    {
+        var changes = new List<string>();
+        if (newName is not null)
+        {
+            changes.Add($"renaming it to '{XboxPartnerCommandSupport.ForTerminal(newName)}'");
+        }
+
+        if (members is not null)
+        {
+            changes.Add(members.Count == 0
+                ? "removing every member"
+                : $"replacing its members with {CountMembers(members.Count)}");
+        }
+
+        return $"Changing {target}: {string.Join(" and ", changes)}.";
+    }
+
+    /// <summary>What an update changes, compared with the audience as it was read.</summary>
+    private sealed record UpdatePreview(
+        string Id,
+        string? CurrentName,
+        string? NewName,
+        int CurrentMemberCount,
+        IReadOnlyList<string>? NewMembers,
+        IReadOnlyList<string> Added,
+        IReadOnlyList<string> Removed)
+    {
+        public static UpdatePreview From(
+            string id, JsonObject current, string? newName, IReadOnlyList<string>? newMembers)
+        {
+            List<string> currentMembers = newMembers is null ? [] : MembersOf(current);
+            var newSet = new HashSet<string>(newMembers ?? [], StringComparer.OrdinalIgnoreCase);
+            var currentSet = new HashSet<string>(currentMembers, StringComparer.OrdinalIgnoreCase);
+            return new UpdatePreview(
+                id,
+                current["name"]?.GetValue<string>(),
+                newName,
+                currentMembers.Count,
+                newMembers,
+                (newMembers ?? []).Where(member => !currentSet.Contains(member)).ToList(),
+                currentMembers.Where(member => !newSet.Contains(member)).ToList());
+        }
+
+        public JsonObject ToJson()
+        {
+            var json = new JsonObject { ["id"] = Id };
+            if (NewName is not null)
+            {
+                json["name"] = new JsonObject { ["current"] = CurrentName, ["new"] = NewName };
+            }
+
+            if (NewMembers is not null)
+            {
+                json["members"] = new JsonObject
+                {
+                    ["currentCount"] = CurrentMemberCount,
+                    ["newCount"] = NewMembers.Count,
+                    ["added"] = new JsonArray([.. Added.Select(member => (JsonNode?)member)]),
+                    ["removed"] = new JsonArray([.. Removed.Select(member => (JsonNode?)member)]),
+                };
+            }
+
+            return json;
+        }
+
+        public string Describe(string target)
+        {
+            var text = new StringBuilder($"Changing {target}:");
+            if (NewName is not null)
+            {
+                var current = CurrentName is null ? "no name" : $"'{XboxPartnerCommandSupport.ForTerminal(CurrentName)}'";
+                text.Append($"\n  Renaming it from {current} to '{XboxPartnerCommandSupport.ForTerminal(NewName)}'.");
+            }
+
+            if (NewMembers is not null)
+            {
+                text.Append($"\n  Replacing its {CountMembers(CurrentMemberCount)} with {CountMembers(NewMembers.Count)}: "
+                    + $"{Added.Count} added, {Removed.Count} removed.");
+                AppendMembers(text, '+', Added);
+                AppendMembers(text, '-', Removed);
+                if (Added.Count > MaxPromptedMembers || Removed.Count > MaxPromptedMembers)
+                {
+                    text.Append("\n  Run with --dry-run to list every change.");
+                }
+            }
+
+            return text.ToString();
+        }
+
+        private static void AppendMembers(StringBuilder text, char sign, IReadOnlyList<string> members)
+        {
+            foreach (var member in members.Take(MaxPromptedMembers))
+            {
+                text.Append($"\n    {sign} {XboxPartnerCommandSupport.ForTerminal(member)}");
+            }
+
+            if (members.Count > MaxPromptedMembers)
+            {
+                text.Append($"\n    {sign} ...and {members.Count - MaxPromptedMembers} more");
+            }
+        }
     }
 
     /// <summary>
@@ -255,12 +411,12 @@ internal static partial class AudienceCommandFactory
             XboxPartnerCommandSupport.WriteGatewayError(exception, result, diagnosis);
             return 1;
         }
-        catch (Exception exception) when (sent && IsUncertainWrite(exception))
+        catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
         {
             Console.Error.WriteLine(unknownOutcome);
             Console.Error.WriteLine(recovery);
             WriteUnknownOutcomeError(exception, result, cancellationToken, correlationId);
-            return PlaytestCommandFactory.OutcomeUnknownExitCode;
+            return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
         }
 
         Write(ForOutput(audience, "memberCount"), OutputOptions.From(result));
@@ -297,15 +453,6 @@ internal static partial class AudienceCommandFactory
                 $"Partner Center rejected the request, so the audience wasn't {done}.",
             _ => null,
         };
-
-    /// <summary>
-    /// Whether a failure after the request was sent leaves the outcome unknown: anything but a client
-    /// error (4xx other than 408) from the service.
-    /// </summary>
-    private static bool IsUncertainWrite(Exception exception) =>
-        exception is not XboxPartnerApiException api
-            || (int)api.StatusCode is < 400 or >= 500
-            || api.StatusCode == HttpStatusCode.RequestTimeout;
 
     // Unlike WriteRequestError, never writes an unreadable response, which can hold the audience's members.
     private static void WriteUnknownOutcomeError(
@@ -400,8 +547,10 @@ internal static partial class AudienceCommandFactory
     private static string CountMembers(int count) => count == 1 ? "1 member" : $"{count} members";
 
     /// <summary>
-    /// Reads a members file: strict UTF-8, one member per line, each trimmed, with blank lines ignored
-    /// and case kept. Errors name the file, never its contents.
+    /// Reads a members file: strict UTF-8, or UTF-16 with a byte order mark, one member per line, each
+    /// trimmed, with blank lines and repeats (ignoring case) dropped and case kept. Lines that aren't plain
+    /// email addresses are refused, before the member limit is checked. Errors name the file and line
+    /// numbers, never its contents.
     /// </summary>
     internal static IReadOnlyList<string> ReadMembersFile(string path)
     {
@@ -417,23 +566,61 @@ internal static partial class AudienceCommandFactory
             throw new IOException($"The members file '{shown}' could not be read: {TerminalText.SingleLine(exception.Message)}", exception);
         }
 
-        var preamble = Encoding.UTF8.Preamble;
+        // Windows PowerShell 5.1 redirects output to a file as UTF-16 with a byte order mark.
+        Encoding encoding = bytes.AsSpan().StartsWith(new byte[] { 0xFF, 0xFE })
+            ? new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true)
+            : bytes.AsSpan().StartsWith(new byte[] { 0xFE, 0xFF })
+                ? new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true)
+                : new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true);
+        var preamble = encoding.Preamble;
         var start = bytes.AsSpan().StartsWith(preamble) ? preamble.Length : 0;
         string text;
         try
         {
-            text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
-                .GetString(bytes, start, bytes.Length - start);
+            text = encoding.GetString(bytes, start, bytes.Length - start);
         }
         catch (DecoderFallbackException exception)
         {
-            throw new InvalidDataException($"The members file '{shown}' isn't valid UTF-8 text.", exception);
+            throw new InvalidDataException($"The members file '{shown}' isn't valid UTF-8 or UTF-16 text.", exception);
         }
 
-        var members = text.Split('\n')
-            .Select(line => line.Trim())
-            .Where(line => line.Length > 0)
-            .ToList();
+        var members = new List<string>();
+        var problems = new List<string>();
+        var lines = text.Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var member = lines[index].Trim();
+            if (member.Length == 0)
+            {
+                continue;
+            }
+
+            var lineNumber = index + 1;
+            members.Add(member);
+            if (member.EnumerateRunes().Any(r => Rune.GetUnicodeCategory(r) == UnicodeCategory.Format))
+            {
+                problems.Add($"line {lineNumber}: has an invisible character");
+            }
+            // MailAddress parses "Name <address>" too, so the address must be the whole line.
+            else if (!MailAddress.TryCreate(member, out var address) || address.Address != member)
+            {
+                problems.Add($"line {lineNumber}: not a plain email address");
+            }
+        }
+
+        if (problems.Count > 0)
+        {
+            var message = new List<string> { $"The members file '{shown}' has lines to fix, so nothing was sent:" };
+            message.AddRange(problems.Take(MaxListedProblems).Select(problem => "  " + problem));
+            if (problems.Count > MaxListedProblems)
+            {
+                message.Add($"  and {problems.Count - MaxListedProblems} more");
+            }
+
+            throw new InvalidDataException(string.Join(Environment.NewLine, message));
+        }
+
+        members = members.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (members.Count > MaxMembers)
         {
             throw new InvalidDataException(

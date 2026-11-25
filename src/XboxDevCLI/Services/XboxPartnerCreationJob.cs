@@ -20,9 +20,6 @@ internal abstract record XboxPartnerCreationJob
     [JsonPropertyName("result")]
     public string? Result { get; init; }
 
-    [JsonPropertyName("errors")]
-    public XboxPartnerGameError[]? Errors { get; init; }
-
     [JsonIgnore]
     public string RawResponse { get; init; } = string.Empty;
 

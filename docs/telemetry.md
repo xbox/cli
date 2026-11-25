@@ -43,10 +43,10 @@ typed in the wrong place is never sent.
 ### Approximate location
 
 The CLI never sends your location. However, Application Insights derives an approximate
-location (country, region or state, and city) from the IP address that sends the event, and
-stores it on every event. The IP address itself isn't kept; it's stored as `0.0.0.0`. The
-location is used only to understand adoption across markets. [Opting out](#opt-out) stops all
-telemetry, including this location.
+location (country or region, state or province, and city) from the IP address that sends
+the event, and stores it on every event. The IP address itself isn't kept; it's stored as
+`0.0.0.0`. The location is used only to understand adoption across markets.
+[Opting out](#opt-out) stops all telemetry, including this location.
 
 ## What isn't collected
 
@@ -91,16 +91,16 @@ xbox --disable-telemetry auth status
 
 ### For the current shell session
 
-Set `XBOX_TELEMETRY_OPTOUT` in PowerShell:
-
-```powershell
-$env:XBOX_TELEMETRY_OPTOUT = "1"
-```
-
-On bash or zsh:
+Set `XBOX_TELEMETRY_OPTOUT`. In bash or zsh:
 
 ```bash
 export XBOX_TELEMETRY_OPTOUT=1
+```
+
+In PowerShell:
+
+```powershell
+$env:XBOX_TELEMETRY_OPTOUT = "1"
 ```
 
 Values `1`, `true`, and `yes` turn telemetry off, whatever else is configured. Setting

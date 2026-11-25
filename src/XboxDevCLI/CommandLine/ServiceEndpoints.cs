@@ -57,4 +57,30 @@ internal static class CommandEndpoints
 
     /// <summary>The endpoints <paramref name="command"/> calls.</summary>
     internal static ServiceEndpoints For(Command command) => FindDeclared(command) ?? ServiceEndpoints.None;
+
+    private static readonly ConditionalWeakTable<Command, Conditional> DeclaredWhen = new();
+
+    private sealed record Conditional(Func<ParseResult, bool> When, ServiceEndpoints Endpoints);
+
+    /// <summary>
+    /// Declares that <paramref name="command"/> calls <paramref name="endpoints"/> when
+    /// <paramref name="when"/> holds for the parsed command line, and what it inherits otherwise.
+    /// Unlike <c>Calls</c>, it applies only to <paramref name="command"/>, not to its subcommands.
+    /// </summary>
+    internal static TCommand CallsWhen<TCommand>(
+        this TCommand command, Func<ParseResult, bool> when, ServiceEndpoints endpoints)
+        where TCommand : Command
+    {
+        DeclaredWhen.AddOrUpdate(command, new Conditional(when, endpoints));
+        return command;
+    }
+
+    /// <summary>The endpoints <paramref name="parseResult"/>'s command calls for its arguments.</summary>
+    internal static ServiceEndpoints For(ParseResult parseResult)
+    {
+        var command = parseResult.CommandResult.Command;
+        return DeclaredWhen.TryGetValue(command, out var conditional) && conditional.When(parseResult)
+            ? conditional.Endpoints
+            : For(command);
+    }
 }

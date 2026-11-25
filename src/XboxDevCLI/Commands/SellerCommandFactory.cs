@@ -75,34 +75,10 @@ internal static class SellerCommandFactory
                 parseResult);
             return 1;
         }
-        catch (InvalidOperationException exception)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
-        }
-        catch (InvalidDataException exception)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
-        }
-        catch (IOException exception)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
-        }
-        catch (UnauthorizedAccessException exception)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
-        }
-        catch (HttpRequestException exception)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
-        }
         catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
             return XboxPartnerCommandSupport.WriteLocalError(
                 new TimeoutException("The request timed out.", exception));
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            return XboxPartnerCommandSupport.WriteLocalError(exception);
         }
     }
 }

@@ -73,7 +73,7 @@ public class GameCreationCommandTests
         Assert.Equal(accepted ? 0 : 1, result.ExitCode);
         Assert.Equal(accepted ? 1 : 0, handler.Requests.Count);
         Assert.Contains(
-            "Creating the game 'Nod Arena' under seller seller-1 is irreversible from this CLI.",
+            "The game 'Nod Arena' under seller seller-1 cannot be deleted after it is created.",
             result.Stderr);
         Assert.DoesNotContain("POST ", result.Stderr);
         Assert.DoesNotContain("/xboxpartner/v1/games", result.Stderr);
@@ -660,6 +660,24 @@ public class GameCreationCommandTests
     }
 
     [Fact]
+    public async Task CancelAfterSending_WritesTheSentCorrelationId()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new RoutingHttpHandler(_ =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+        var result = await InvokeAsync(
+            handler, [.. CreateArguments, "--confirm"], cancellationToken: cancellation.Token);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Empty(result.Stdout);
+        Assert.Contains("it is unknown whether the game was created. Do not resubmit.", result.Stderr, StringComparison.Ordinal);
+        TestAccountCommandTests.AssertCorrelationIdWrittenOnce(
+            result.Stderr, Assert.Single(handler.Requests).Header("x-ms-correlation-id")!);
+    }
+
+    [Fact]
     public async Task UnsafeSubmittedJobId_IsSanitizedOnStderrAndRecoveryListsGames()
     {
         const string unsafeAccepted =
@@ -962,7 +980,9 @@ public class GameCreationCommandTests
             : throw new TaskCanceledException("Simulated interrupted request."));
         var result = await InvokeAsync(handler, [.. CreateArguments, "--confirm"]);
         Assert.Equal(1, result.ExitCode);
-        Assert.Equal(afterSubmission ? 2 : 1, handler.Requests.Count);
+        // An interrupted status read is retried as a transient failure until the limit; the submission never is.
+        Assert.Equal(afterSubmission ? 1 + XboxPartnerPoller.MaxConsecutiveReadFailures : 1, handler.Requests.Count);
+        Assert.Single(handler.Requests, request => request.Method == HttpMethod.Post);
         Assert.Empty(result.Stdout);
         Assert.Contains(afterSubmission ? "game job get job-1" : "game list", result.Stderr);
         Assert.Contains(afterSubmission ? "Stopped waiting" : "Do not resubmit", result.Stderr);

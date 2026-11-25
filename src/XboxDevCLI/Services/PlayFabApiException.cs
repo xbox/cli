@@ -98,7 +98,7 @@ public class PlayFabApiException : Exception
         ApiPath = apiPath;
         Outcome = outcome;
         RawBody = string.Empty;
-        FailureMessage = innerException.Message;
+        FailureMessage = NetworkErrors.Describe(innerException);
         OutcomeWarning = DescribeUnknownOutcome(apiPath, outcome, reason);
     }
 

@@ -189,7 +189,8 @@ public sealed class ContextCommandTests : IDisposable
     [InlineData("--seller-id must be a positive numeric value.", "seller-id", "0")]
     [InlineData("Cannot parse argument '9223372036854775808' for option '--seller-id'", "seller-id", "9223372036854775808")]
     [InlineData("--playfab-title-id must contain only letters and digits.", "playfab-title-id", "ABC-12")]
-    [InlineData("--sandbox-id must be non-empty and cannot contain whitespace.", "sandbox-id", "Dev 1")]
+    [InlineData("--sandbox-id must be non-empty and cannot contain whitespace or control characters.", "sandbox-id", "Dev 1")]
+    [InlineData("--sandbox-id must be non-empty and cannot contain whitespace or control characters.", "sandbox-id", "XDKS\u001b[31m.1")]
     [InlineData("Unknown context key 'sandbox'. Valid keys: playfab-title-id, sandbox-id, seller-id, title-id.", "sandbox", "Dev.1")]
     public async Task Set_InvalidInputFailsBeforeTheSignInIsRead(string expected, string key, string value)
     {
@@ -445,7 +446,7 @@ public sealed class ContextCommandTests : IDisposable
         Assert.Equal(0, result.ExitCode);
         using var doc = JsonDocument.Parse(result.Stdout);
         Assert.Equal(
-            """{"keys":[{"name":"playfab-title-id","usedBy":"playfab"},{"name":"sandbox-id","usedBy":"xbl"},{"name":"seller-id","usedBy":"audience, game, package, playtest, sandbox, test-account, xbl"},{"name":"title-id","usedBy":"xbl"}]}""",
+            """{"keys":[{"name":"playfab-title-id","usedBy":"playfab"},{"name":"sandbox-id","usedBy":"xbl"},{"name":"seller-id","usedBy":"audience, game, package, pc, playtest, sandbox, store-listing, test-account, xbl"},{"name":"title-id","usedBy":"xbl"}]}""",
             result.Stdout.TrimEnd());
         Assert.Empty(result.Stderr);
         Assert.Equal(0, _storeRequests);
@@ -462,7 +463,7 @@ public sealed class ContextCommandTests : IDisposable
         Assert.Matches(@"^KEY\s+USED BY$", lines[0]);
         Assert.Matches(@"^playfab-title-id\s+playfab$", lines[2]);
         Assert.Matches(@"^sandbox-id\s+xbl$", lines[3]);
-        Assert.Matches(@"^seller-id\s+audience, game, package, playtest, sandbox, test-account, xbl$", lines[4]);
+        Assert.Matches(@"^seller-id\s+audience, game, package, pc, playtest, sandbox, store-listing, test-account, xbl$", lines[4]);
         Assert.Matches(@"^title-id\s+xbl$", lines[5]);
     }
 

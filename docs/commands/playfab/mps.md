@@ -82,15 +82,15 @@ Most MPS commands send the operation's JSON request object, like
 
 | Option | Description |
 | --- | --- |
-| `--body` | The JSON request body, inline. Defaults to `{}` when neither body option is passed. |
+| `--body` | The JSON request body, inline. Defaults to `{}` when neither body option is passed. In Windows PowerShell 5.1, pipe the body to `--body-file -` instead. See [PlayFab API integration](../../playfab-api.md#windows-powershell-51). |
 | `--body-file` | Path to a file holding the JSON request body, or `-` to read it from stdin. |
 
 `--body` and `--body-file` can't be combined. `certificate upload` and `secret upload` take
 only `--body-file`, and `asset upload` takes neither; see their sections.
 
 ```bash
-xbox --playfab-title-id ABC123 playfab mps build get --body '{ "BuildId": "11111111-2222-3333-4444-555555555555" }'
-xbox --playfab-title-id ABC123 --data-only playfab mps server list --body '{ "BuildId": "11111111-2222-3333-4444-555555555555", "Region": "EastUs" }'
+echo '{ "BuildId": "11111111-2222-3333-4444-555555555555" }' | xbox --playfab-title-id ABC123 playfab mps build get --body-file -
+echo '{ "BuildId": "11111111-2222-3333-4444-555555555555", "Region": "EastUs" }' | xbox --playfab-title-id ABC123 --data-only playfab mps server list --body-file -
 ```
 
 ## Destructive commands
@@ -103,7 +103,7 @@ need `--confirm` even in a terminal. Other MPS commands that change things run w
 asking. See [Safety and destructive operations](../../safety.md).
 
 ```bash
-xbox --playfab-title-id ABC123 playfab mps build delete --body '{ "BuildId": "11111111-2222-3333-4444-555555555555" }' --confirm
+echo '{ "BuildId": "11111111-2222-3333-4444-555555555555" }' | xbox --playfab-title-id ABC123 playfab mps build delete --body-file - --confirm
 ```
 
 ## Paging
@@ -124,13 +124,13 @@ results a page holds.
 Get the first page of builds:
 
 ```bash
-xbox --playfab-title-id ABC123 --data-only playfab mps build list --body '{ "PageSize": 50 }'
+echo '{ "PageSize": 50 }' | xbox --playfab-title-id ABC123 --data-only playfab mps build list --body-file -
 ```
 
 If its `SkipToken` isn't `null`, get the next page by passing that token:
 
 ```bash
-xbox --playfab-title-id ABC123 --data-only playfab mps build list --body '{ "PageSize": 50, "SkipToken": "<SkipToken from the previous page>" }'
+echo '{ "PageSize": 50, "SkipToken": "<SkipToken from the previous page>" }' | xbox --playfab-title-id ABC123 --data-only playfab mps build list --body-file -
 ```
 
 Table output has no column for `SkipToken`, so when more results exist, the table is
@@ -233,12 +233,11 @@ xbox --playfab-title-id ABC123 playfab mps certificate upload --body-file certif
 
 To build the body without writing the secret to another file, pipe it to `--body-file -`.
 Here, `jq` reads the value from `api-key.txt` rather than from its own arguments, so the
-value stays out of process listings:
+value stays out of process listings, and `rtrimstr([10] | implode) | rtrimstr([13] | implode)`
+drops the line ending at the end of the file:
 
 ```bash
-jq -n --rawfile value api-key.txt \
-  '{GameSecret: {Name: "nod-arena-api-key", Value: ($value | rtrimstr("\n"))}}' \
-  | xbox --playfab-title-id ABC123 playfab mps secret upload --body-file -
+jq -n --arg name nod-arena-api-key --rawfile value api-key.txt '{GameSecret: {Name: $name, Value: ($value | rtrimstr([10] | implode) | rtrimstr([13] | implode))}}' | xbox --playfab-title-id ABC123 playfab mps secret upload --body-file -
 ```
 
 ## `mps asset upload`

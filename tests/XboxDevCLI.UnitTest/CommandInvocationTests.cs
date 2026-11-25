@@ -60,6 +60,30 @@ public sealed class CommandInvocationTests : IDisposable
     public void UndeclaredCommand_RequiresAuthentication() =>
         Assert.Equal(CommandRequirement.Authentication, CommandRequirements.For(new Command("probe")));
 
+    /// <summary>Only a sandbox number needs a sign-in and the service; a sandbox ID needs neither.</summary>
+    [Theory]
+    [InlineData("pc sandbox set ABCDEF.1", "Configuration", "None")]
+    [InlineData("pc sandbox set 1", "Authentication", "XboxPartner")]
+    public void PcSandboxSet_NeedsSignInOnlyForANumber(string command, string requirement, string endpoints)
+    {
+        var parseResult = Program.BuildRootCommand().Parse(command, Program.NoResponseFileConfig);
+
+        Assert.Empty(parseResult.Errors);
+        Assert.Equal(Enum.Parse<CommandRequirement>(requirement), CommandRequirements.For(parseResult));
+        Assert.Equal(Enum.Parse<ServiceEndpoints>(endpoints), CommandEndpoints.For(parseResult));
+
+        // Preparing a sign-in fails in this mode without its settings, so only a number throws.
+        using var automation = TestEnvironment.UseAuthenticationMode("clientsecret");
+        if (requirement == "Authentication")
+        {
+            Assert.ThrowsAny<InvalidOperationException>(() => Program.Prepare(parseResult));
+        }
+        else
+        {
+            Program.Prepare(parseResult);
+        }
+    }
+
     /// <summary>
     /// Help, the version, and offline commands never read the sign-in settings, so settings a
     /// command that signs in would refuse don't stop them.
@@ -144,6 +168,8 @@ public sealed class CommandInvocationTests : IDisposable
     [InlineData("playfab title-data get", true, false)]
     [InlineData("seller list", false, true)]
     [InlineData("xbl schema list", false, true)]
+    [InlineData("pc sandbox set 1", false, true)]
+    [InlineData("pc sandbox set ABCDEF.1", false, false)]
     public void EndpointWarnings_AreWrittenForTheEndpointsTheCommandCalls(string command, bool playFab, bool xboxPartner)
     {
         using var automation = TestEnvironment.UseAuthenticationMode("managedidentity");
@@ -197,54 +223,53 @@ public sealed class CommandInvocationTests : IDisposable
     }
 
     /// <summary>
-    /// Loading configuration that can't be read keeps the error for preparation to report, and
-    /// writes and throws nothing itself.
+    /// An option read before the parser reports its errors, by the configuration or for
+    /// <c>--verbose</c>, is reported once as a parse error when the parser rejected it, rather than
+    /// thrown.
     /// </summary>
-    [Fact]
-    public void LoadingUnreadableConfiguration_KeepsTheErrorQuietly()
+    [Theory]
+    [InlineData("auth status --client-id", "--client-id")]
+    [InlineData("auth status --scopes a --scopes b", "--scopes")]
+    [InlineData("auth status --playfab-title-id", "--playfab-title-id")]
+    [InlineData("auth status --disable-telemetry true --disable-telemetry false", "--disable-telemetry")]
+    [InlineData("auth status --verbose true --verbose false", "--verbose")]
+    public async Task RejectedOption_IsReportedAsAParseError(string command, string option)
     {
-        using var unreadable = TestSettings.UseUnreadable();
-        var parseResult = Program.BuildRootCommand().Parse(
-            ["playfab", "title-data", "get"], Program.NoResponseFileConfig);
-        CommandInvocation? invocation = null;
+        var (exitCode, stdout, stderr) = await MainAsync(command.Split(' '));
 
-        var stderr = WithChangedEndpoints(() => invocation = Program.GetInvocation(parseResult));
+        Assert.Equal(1, exitCode);
+        Assert.Empty(stdout);
+        Assert.Single(stderr.Split(Environment.NewLine), line => line.Contains($"'{option}'", StringComparison.Ordinal));
+    }
 
-        Assert.Empty(stderr);
-        Assert.Null(invocation!.LoadedConfiguration.Configuration);
-        Assert.IsType<InvalidDataException>(invocation.LoadedConfiguration.Error);
-        Assert.Throws<InvalidDataException>(() => Program.Prepare(parseResult));
+    /// <summary>Help is still shown when the parser rejected an option read before it reports its errors.</summary>
+    [Theory]
+    [InlineData("auth status --help --client-id")]
+    [InlineData("auth status --tenant-id a --tenant-id b --help")]
+    [InlineData("auth status --help --disable-telemetry true --disable-telemetry false")]
+    [InlineData("auth status --help --verbose true --verbose false")]
+    public async Task RejectedOption_DoesNotStopHelp(string command)
+    {
+        var (exitCode, stdout, _) = await MainAsync(command.Split(' '));
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Show authentication status", stdout, StringComparison.Ordinal);
     }
 
     /// <summary>
-    /// When configuration can't be loaded, telemetry still reads its environment variables, so a
-    /// preparation failure is recorded, and still honors <c>--disable-telemetry</c>.
+    /// <c>--disable-telemetry</c> given more than one value still turns telemetry off when any of
+    /// them is true, so an invocation the parser rejects doesn't send it.
     /// </summary>
     [Theory]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    public void UnreadableConfiguration_TelemetryFallsBackToEnvironmentVariables(bool disableTelemetry, bool expectedEnabled)
+    [InlineData("auth status --disable-telemetry true --disable-telemetry false")]
+    [InlineData("auth status --disable-telemetry false --disable-telemetry true")]
+    [InlineData("auth status --help --disable-telemetry true --disable-telemetry false")]
+    [InlineData("auth status --help --disable-telemetry false --disable-telemetry true")]
+    public void RepeatedDisableTelemetry_StillTurnsTelemetryOff(string command)
     {
-        using var unreadable = TestSettings.UseUnreadable();
-        string[] args = ["seller", "list"];
-        var parseResult = Program.BuildRootCommand().Parse(
-            disableTelemetry ? ["--disable-telemetry", .. args] : args, Program.NoResponseFileConfig);
-        const string configured = "InstrumentationKey=11111111-1111-1111-1111-111111111111";
-        var originalConnection = Environment.GetEnvironmentVariable("XBOX_TELEMETRY__CONNECTIONSTRING");
-        Environment.SetEnvironmentVariable("XBOX_TELEMETRY__CONNECTIONSTRING", configured);
-        try
-        {
-            var options = TelemetryOptions.FromConfiguration(
-                Program.GetTelemetryConfiguration(parseResult), _ => null, embeddedConnectionString: "");
+        var parseResult = Program.BuildRootCommand().Parse(command, Program.NoResponseFileConfig);
 
-            Assert.Null(Program.GetInvocation(parseResult).LoadedConfiguration.Configuration);
-            Assert.Equal(expectedEnabled, options.Enabled);
-            Assert.Equal(configured, options.ConnectionString);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("XBOX_TELEMETRY__CONNECTIONSTRING", originalConnection);
-        }
+        Assert.Equal(bool.FalseString, Program.LoadConfiguration(parseResult)["Telemetry:Enabled"]);
     }
 
     /// <summary>A command that signs in reports invalid sign-in settings before its action runs.</summary>
@@ -261,27 +286,6 @@ public sealed class CommandInvocationTests : IDisposable
         Assert.False(ran);
         Assert.Empty(stdout);
         Assert.Contains("XBOX_AUTHENTICATION__", stderr, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// Configuration that can't be read fails a command that reads it, before its action, and
-    /// doesn't affect one that doesn't.
-    /// </summary>
-    [Theory]
-    [InlineData("None", 0)]
-    [InlineData("Configuration", 1)]
-    [InlineData("Authentication", 1)]
-    public async Task UnreadableConfiguration_FailsOnlyCommandsThatReadIt(string requirement, int expectedExit)
-    {
-        using var unreadable = TestSettings.UseUnreadable();
-        var ran = false;
-        var root = Root(Probe(Enum.Parse<CommandRequirement>(requirement), () => ran = true));
-
-        var (exitCode, _, stderr) = await InvokeAsync(root, "probe");
-
-        Assert.Equal(expectedExit, exitCode);
-        Assert.Equal(expectedExit == 0, ran);
-        Assert.Equal(expectedExit == 0, stderr.Length == 0);
     }
 
     /// <summary>

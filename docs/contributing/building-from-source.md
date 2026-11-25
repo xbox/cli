@@ -48,9 +48,7 @@ Releases are single-file, self-contained executables for the runtime identifiers
 identifier you want:
 
 ```bash
-dotnet publish src/XboxDevCLI/XboxDevCLI.csproj --configuration Release \
-  --runtime linux-x64 --self-contained \
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+dotnet publish src/XboxDevCLI/XboxDevCLI.csproj --configuration Release --runtime linux-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
 ## PlayFab code generation

@@ -9,13 +9,16 @@ using System.Runtime.CompilerServices;
 using Microsoft.Identity.Client;
 using Microsoft.Identity.Client.Extensions.Msal;
 using XboxDevCLI.Output;
+using XboxDevCLI.Services;
 using XboxDevCLI.Telemetry;
 
 namespace XboxDevCLI.CommandLine;
 
 /// <summary>
 /// Reports the expected failures of preparing and running a command the same way for every
-/// command: one message on stderr, made safe for a terminal, and exit code 1. A command whose
+/// command: a message on stderr, made safe for a terminal, and exit code 1. A request that may
+/// have reached the service but got no readable response, such as a dropped connection or a body
+/// that stopped arriving, is preceded by its <c>x-ms-correlation-id</c>. A command whose
 /// errors have their own shape, such as <c>auth status</c>'s JSON, declares a format with
 /// <see cref="FormatsErrors{TCommand}"/> rather than catching them itself.
 /// </summary>
@@ -25,8 +28,9 @@ namespace XboxDevCLI.CommandLine;
 /// surfaces as one. The caller's cancellation that reaches the boundary exits with
 /// <see cref="CanceledExitCode"/> and writes nothing; a command that reports a cancellation
 /// itself, such as a write whose outcome is unknown, returns its own exit code instead. Messages come from
-/// the components that raised them, which name settings and files but never their contents, and
-/// inner exceptions are never written.
+/// the components that raised them, which name settings and files but never their contents. Inner
+/// exceptions aren't written, except a network error's cause, which follows its message, and a
+/// correlation ID an inner exception carries.
 /// </remarks>
 internal static class CommandErrorBoundary
 {
@@ -62,10 +66,15 @@ internal static class CommandErrorBoundary
         TelemetryRecorder.RecordError(exception);
 
         // Line breaks are kept, written as the platform's, and any other control character removed.
-        var message = TerminalText.Message(exception.Message);
-        Console.Error.WriteLine(Formats.TryGetValue(parseResult.CommandResult.Command, out var format)
-            ? format(parseResult, message)
-            : message);
+        var message = TerminalText.Message(NetworkErrors.Describe(exception));
+        if (Formats.TryGetValue(parseResult.CommandResult.Command, out var format))
+        {
+            Console.Error.WriteLine(format(parseResult, message));
+            return 1;
+        }
+
+        Commands.XboxPartnerCommandSupport.WriteCorrelationId(exception, Console.Error);
+        Console.Error.WriteLine(message);
         return 1;
     }
 

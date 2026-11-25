@@ -296,6 +296,24 @@ public class TestAccountDeleteCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Delete_CtrlCAfterSendingWritesTheSentCorrelationId()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new XboxPartnerHttpMessageHandler(() =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+
+        Invocation result = await InvokeAsync(DeleteArgs("--confirm"), handler, cancellation.Token);
+
+        AssertOutcomeUnknown(result, handler);
+        Assert.Contains("Canceled while waiting for the service to answer the delete.", result.Stderr, StringComparison.Ordinal);
+        TestAccountCommandTests.AssertCorrelationIdWrittenOnce(
+            result.Stderr, Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]));
+    }
+
+    [Fact]
     public async Task Delete_TimeoutAfterSendingIsAnUnknownOutcome()
     {
         var handler = new XboxPartnerHttpMessageHandler(() => throw new TaskCanceledException("timed out"));
@@ -426,7 +444,7 @@ public class TestAccountDeleteCommandTests : IDisposable
 
     private static void AssertOutcomeUnknown(Invocation result, XboxPartnerHttpMessageHandler handler)
     {
-        Assert.Equal(TestAccountCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether batch 42 is being deleted", result.Stderr, StringComparison.Ordinal);

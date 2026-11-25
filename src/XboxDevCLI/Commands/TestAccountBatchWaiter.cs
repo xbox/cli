@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using System.Net;
-using System.Text.Json;
 using XboxDevCLI.Services;
 
 namespace XboxDevCLI.Commands;
@@ -41,16 +40,14 @@ internal readonly record struct TestAccountBatchWait(
 /// for good keeps its ID on the batch, so the deadline is the only way such a wait ends. Once a
 /// delete removes the batch, reads answer 404 <c>test_account_batch_not_found</c>; only a wait for a
 /// delete takes that as success, and for an update it fails the wait like any read that cannot
-/// succeed. Reads are safe to repeat, so transient read failures are tolerated as in
-/// <see cref="TestAccountJobWaiter"/>; the delete or update itself is never sent from here.
+/// succeed. The wait runs on <see cref="XboxPartnerPoller"/>, which retries transient read failures;
+/// the delete or update itself is never sent from here.
 /// </remarks>
 internal static class TestAccountBatchWaiter
 {
     internal const string BatchNotFoundCode = "test_account_batch_not_found";
 
     private const int ReadsWithoutJobBeforeStopped = 2;
-
-    private static readonly JsonSerializerOptions SerializerOptions = new() { PropertyNameCaseInsensitive = true };
 
     public static async Task<TestAccountBatchWait> WaitAsync(
         TimeSpan? retryAfter,
@@ -62,67 +59,46 @@ internal static class TestAccountBatchWaiter
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(readBatch);
-        ArgumentNullException.ThrowIfNull(delayAsync);
-        ArgumentNullException.ThrowIfNull(getUtcNow);
 
-        DateTimeOffset deadline = getUtcNow() + timeout;
         TimeSpan interval = TestAccountJobWaiter.Clamp(retryAfter ?? TestAccountJobWaiter.DefaultInterval);
-        TimeSpan? nextDelay = null;
-        int failures = 0;
         int idleReads = 0;
+        bool deleted = false;
         TestAccountBatch? last = null;
-        while (true)
-        {
-            TimeSpan remaining = deadline - getUtcNow();
-            if (remaining <= TimeSpan.Zero)
+        bool ended = await XboxPartnerPoller.PollAsync<TestAccountBatch?>(
+            async token =>
             {
-                return new(TestAccountBatchWaitOutcome.TimedOut, last);
-            }
+                try
+                {
+                    return ReadBatch(await readBatch(token).ConfigureAwait(false));
+                }
+                catch (XboxPartnerApiException exception) when (deleting && IsGone(exception))
+                {
+                    return null;
+                }
+            },
+            batch =>
+            {
+                if (batch is null)
+                {
+                    deleted = true;
+                    return true;
+                }
 
-            TimeSpan delay = nextDelay ?? interval;
-            await delayAsync(delay < remaining ? delay : remaining, cancellationToken).ConfigureAwait(false);
-            remaining = deadline - getUtcNow();
-            if (remaining <= TimeSpan.Zero)
-            {
-                return new(TestAccountBatchWaitOutcome.TimedOut, last);
-            }
-
-            // The deadline bounds the read too, so a slow answer cannot stretch the wait past --timeout.
-            using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            readCancellation.CancelAfter(remaining);
-            try
-            {
-                string body = await readBatch(readCancellation.Token)
-                    .WaitAsync(readCancellation.Token)
-                    .ConfigureAwait(false);
-                failures = 0;
-                nextDelay = null;
                 // One read without a job could race the service recording the job, or a deleted
                 // batch disappearing just after its job ends, so only two in a row mean it ended.
-                last = ReadBatch(body);
-                idleReads = string.IsNullOrWhiteSpace(last.JobId) ? idleReads + 1 : 0;
-                if (idleReads >= ReadsWithoutJobBeforeStopped)
-                {
-                    return new(TestAccountBatchWaitOutcome.JobEnded, last);
-                }
-            }
-            catch (XboxPartnerApiException exception) when (deleting && IsGone(exception))
-            {
-                return new(TestAccountBatchWaitOutcome.Deleted, null);
-            }
-            catch (Exception) when (readCancellation.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                return new(TestAccountBatchWaitOutcome.TimedOut, last);
-            }
-            catch (Exception exception) when (
-                TestAccountJobWaiter.IsTransient(exception, cancellationToken) &&
-                ++failures < TestAccountJobWaiter.MaxConsecutiveReadFailures)
-            {
-                nextDelay = exception is XboxPartnerApiException { RetryAfter: { } after }
-                    ? TestAccountJobWaiter.Clamp(after)
-                    : interval;
-            }
-        }
+                last = batch;
+                idleReads = string.IsNullOrWhiteSpace(batch.JobId) ? idleReads + 1 : 0;
+                return idleReads >= ReadsWithoutJobBeforeStopped;
+            },
+            failedReadRetryAfter => failedReadRetryAfter is { } after ? TestAccountJobWaiter.Clamp(after) : interval,
+            timeout,
+            delayAsync,
+            getUtcNow,
+            cancellationToken).ConfigureAwait(false);
+
+        return deleted
+            ? new(TestAccountBatchWaitOutcome.Deleted, null)
+            : new(ended ? TestAccountBatchWaitOutcome.JobEnded : TestAccountBatchWaitOutcome.TimedOut, last);
     }
 
     /// <summary>True when a batch read says the batch no longer exists.</summary>
@@ -131,21 +107,9 @@ internal static class TestAccountBatchWaiter
         TestAccountCommandFactory.ReadProblemString(exception.ResponseBody, "code") == BatchNotFoundCode;
 
     /// <summary>Reads the batch from a batch response, or throws <see cref="InvalidDataException"/>.</summary>
-    internal static TestAccountBatch ReadBatch(string body)
-    {
-        TestAccountBatchResponse? response;
-        try
-        {
-            response = JsonSerializer.Deserialize<TestAccountBatchResponse>(body, SerializerOptions);
-        }
-        catch (JsonException exception)
-        {
-            throw new InvalidDataException("The test account batch response was not valid JSON.", exception);
-        }
-
-        return response?.Batch
+    internal static TestAccountBatch ReadBatch(string body) =>
+        XboxPartnerCommandSupport.DeserializeResponse<TestAccountBatchResponse>(body, "test account batch").Batch
             ?? throw new InvalidDataException("The test account batch response did not contain a batch.");
-    }
 
     /// <summary>
     /// Names the fields the update asked to change that the batch does not show, or returns an

@@ -37,9 +37,18 @@ result.
 - Describe what the reader sees and does, not how the CLI does it.
 - Document a case only when a realistic reader will meet it.
 - Say what a command doesn't do only when a reader would expect it to.
+- Don't restate in words what an option's name, an example, or a command's output already
+  shows, and don't tell readers how to write their scripts. Give the facts a script depends
+  on, such as exit codes and which output can change between releases.
 - Keep tutorials on the common path, and put exceptions on the reference page.
 - Make every code block work when pasted whole. Put alternatives, and examples that change
   something, in separate blocks; a list of read-only examples can share one.
+- Make every example work in PowerShell and in a POSIX shell. Keep each command on one line,
+  write relative paths with `/`, and pipe a JSON body to `--body-file -` rather than passing it
+  with `--body`. Keep the piped JSON free of backslashes, which `echo` in zsh and some other
+  shells interprets; if the body needs one, pass a file with `--body-file <file>`. When a step
+  needs one shell's syntax, give an "In bash or zsh:" block followed by an "In PowerShell:"
+  block.
 - Say each shared fact once, on the page that owns it, and link to it from the others. For
   example, [Context](../commands/context.md) owns where a command gets its seller or title,
   and [Safety and destructive operations](../safety.md) owns which commands ask first.

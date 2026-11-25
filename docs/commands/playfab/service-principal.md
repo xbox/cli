@@ -60,11 +60,7 @@ Start from the current grants rather than writing a file from scratch. Save the 
 `Version` as `--expected-version`:
 
 ```bash
-xbox playfab service-principal get \
-  --studio-id 1234567890ABCDEF \
-  --principal-tenant-id 22222222-3333-4444-5555-666666666666 \
-  --principal-object-id 33333333-4444-5555-6666-777777777777 \
-  > grants.json
+xbox playfab service-principal get --studio-id 1234567890ABCDEF --principal-tenant-id 22222222-3333-4444-5555-666666666666 --principal-object-id 33333333-4444-5555-6666-777777777777 > grants.json
 ```
 
 A grants file can be the whole output of `get`, its `data`, the `ServicePrincipal` object
@@ -114,36 +110,22 @@ set, edit that output and pass it to `set` with its `Version` as `--expected-ver
 List a studio's service principals, and show one's grants:
 
 ```bash
-xbox playfab service-principal list \
-  --studio-id 1234567890ABCDEF
+xbox playfab service-principal list --studio-id 1234567890ABCDEF
 
-xbox playfab service-principal get \
-  --studio-id 1234567890ABCDEF \
-  --principal-tenant-id 22222222-3333-4444-5555-666666666666 \
-  --principal-object-id 33333333-4444-5555-6666-777777777777
+xbox playfab service-principal get --studio-id 1234567890ABCDEF --principal-tenant-id 22222222-3333-4444-5555-666666666666 --principal-object-id 33333333-4444-5555-6666-777777777777
 ```
 
 Replace the service principal's grants with those in `grants.json`, which you saved from
 `get` and edited:
 
 ```bash
-xbox playfab service-principal set \
-  --studio-id 1234567890ABCDEF \
-  --principal-tenant-id 22222222-3333-4444-5555-666666666666 \
-  --principal-object-id 33333333-4444-5555-6666-777777777777 \
-  --display-name "Nod Publishers build" \
-  --grants-file grants.json \
-  --expected-version 3
+xbox playfab service-principal set --studio-id 1234567890ABCDEF --principal-tenant-id 22222222-3333-4444-5555-666666666666 --principal-object-id 33333333-4444-5555-6666-777777777777 --display-name "Nod Publishers build" --grants-file grants.json --expected-version 3
 ```
 
 Remove the service principal and its grants from the studio:
 
 ```bash
-xbox playfab service-principal revoke \
-  --studio-id 1234567890ABCDEF \
-  --principal-tenant-id 22222222-3333-4444-5555-666666666666 \
-  --principal-object-id 33333333-4444-5555-6666-777777777777 \
-  --confirm
+xbox playfab service-principal revoke --studio-id 1234567890ABCDEF --principal-tenant-id 22222222-3333-4444-5555-666666666666 --principal-object-id 33333333-4444-5555-6666-777777777777 --confirm
 ```
 
 After `revoke`, the service principal's next PlayFab request in the studio fails. `revoke`

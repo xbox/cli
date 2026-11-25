@@ -95,7 +95,12 @@ internal static class PlayerCommandFactory
                     output, stdout, stderr,
                     cancellationToken)));
 
-        return command.WithMetadata(new CommandMetadata(ApiPaths: [GetUserAccountInfoPath]));
+        return command.WithMetadata(new CommandMetadata(
+            ApiPaths: [GetUserAccountInfoPath],
+            Examples:
+            [
+                "xbox playfab player account get --playfab-id PLAYER123",
+            ]));
     }
 
     /// <summary>

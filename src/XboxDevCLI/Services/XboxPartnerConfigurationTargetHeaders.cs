@@ -67,8 +67,10 @@ internal sealed partial class XboxPartnerClient
         catch (Exception exception) when (sent && (exception is HttpRequestException or IOException
             || (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)))
         {
-            // The request may have reached the service, so keep the ID it was sent with for tracing.
-            throw new XboxPartnerResponseException(string.Empty, correlationId, exception);
+            // The request may have reached the service, so keep the ID it was sent with for tracing,
+            // unless it failed before reaching it.
+            throw new XboxPartnerResponseException(
+                string.Empty, NeverReachedService(exception) ? null : correlationId, exception);
         }
 
         using HttpResponseMessage response = sentResponse;
@@ -85,9 +87,7 @@ internal sealed partial class XboxPartnerClient
         string body;
         try
         {
-            using var bodyTimeout = CreateResponseBodyTimeout(cancellationToken);
-            body = await ReadResponseBodyWithLimitAsync(response.Content, bodyTimeout.Token)
-                .ConfigureAwait(false);
+            body = await ReadResponseBodyAsync(response, correlationId, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is InvalidOperationException or IOException
             or HttpRequestException

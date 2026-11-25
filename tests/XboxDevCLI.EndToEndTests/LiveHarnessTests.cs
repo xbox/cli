@@ -177,6 +177,51 @@ public sealed class LiveHarnessTests : IDisposable
     }
 
     [Fact]
+    public void Load_InAzureCliModeNeedsTheAzureCliSessionRatherThanGitHubOidc()
+    {
+        var variables = CompleteVariables(
+            (LiveSettings.AuthenticationModeVariable, LiveSettings.AzureCliMode),
+            (LiveSettings.OidcRequestUrlVariable, null),
+            (LiveSettings.OidcRequestTokenVariable, null));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => LiveSettings.Load(variables));
+        Assert.Contains(LiveSettings.AzureConfigDirectoryVariable, exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("id-token", exception.Message, StringComparison.Ordinal);
+
+        var settings = LiveSettings.Load(CompleteVariables(
+            (LiveSettings.AuthenticationModeVariable, LiveSettings.AzureCliMode),
+            (LiveSettings.AzureConfigDirectoryVariable, "/azure"),
+            (LiveSettings.OidcRequestUrlVariable, null),
+            (LiveSettings.OidcRequestTokenVariable, null)));
+        Assert.Equal(LiveSettings.AzureCliMode, settings.AuthenticationMode);
+    }
+
+    [Fact]
+    public void Load_RejectsAnUnknownAuthenticationMode()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LiveSettings.Load(CompleteVariables((LiveSettings.AuthenticationModeVariable, "clientsecret"))));
+
+        Assert.Contains(LiveSettings.AuthenticationModeVariable, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildEnvironment_InAzureCliModeKeepsTheSessionAndOmitsTheAppRegistration()
+    {
+        var settings = LiveSettings.Load(CompleteVariables(
+            (LiveSettings.AuthenticationModeVariable, LiveSettings.AzureCliMode),
+            (LiveSettings.AzureConfigDirectoryVariable, "/azure")));
+        var parent = new System.Collections.Hashtable { [LiveSettings.AzureConfigDirectoryVariable] = "/azure" };
+
+        var environment = CliRunner.BuildEnvironment(parent, settings, "/state");
+
+        Assert.Equal(LiveSettings.AzureCliMode, environment["XBOX_AUTHENTICATION__MODE"]);
+        Assert.Equal("/azure", environment[LiveSettings.AzureConfigDirectoryVariable]);
+        Assert.DoesNotContain(LiveSettings.ClientIdVariable, environment.Keys);
+        Assert.DoesNotContain(LiveSettings.TenantIdVariable, environment.Keys);
+    }
+
+    [Fact]
     public async Task RunProcessAsync_CapturesExitCodeAndStreams()
     {
         var result = await CliRunner.RunProcessAsync(DotNet("--version"), TimeSpan.FromMinutes(1));

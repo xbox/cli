@@ -22,8 +22,9 @@ namespace XboxDevCLI.PlayFab.Commands;
 ///   <item><c>operation execute</c> — <c>ExecuteInventoryOperations</c> (a batch of operations as JSON).</item>
 ///   <item><c>operation status</c> — <c>GetInventoryOperationStatus</c> (the status of an in-progress inventory transfer, by its operation token).</item>
 /// </list>
-/// The target entity is addressed with <c>--entity-id</c>/<c>--entity-type</c> (both or neither;
-/// omitting both defers to the calling entity). <c>add</c> and <c>operation execute</c> mutate
+/// Every verb requires the target entity, <c>--entity-id</c> and <c>--entity-type</c>: PlayFab
+/// would otherwise target the caller, which is always the title, and a title has no inventory.
+/// <c>add</c> and <c>operation execute</c> mutate
 /// production inventory but are not <c>Delete*</c>/<c>Shutdown*</c> paths, so the name-based hard
 /// gate in <c>PlayFabApiClient</c> does not fire for them. Because an <c>operation execute</c>
 /// batch can still carry a <c>Delete</c> operation, <c>operation execute</c> re-applies the
@@ -86,11 +87,11 @@ internal static class EconomyCommandFactory
 
     #region Shared option factories
 
-    private static Option<string?> EntityIdOption() =>
-        OptionalOption("--entity-id", "The id of the entity whose inventory to target. Requires --entity-type. Omit both to default to the calling entity.");
+    private static Option<string> EntityIdOption() =>
+        RequiredOption("--entity-id", "The ID of the entity whose inventory to target, such as a player's title player account ID.");
 
-    private static Option<string?> EntityTypeOption() =>
-        OptionalOption("--entity-type", "The type of the target entity (e.g. 'title_player_account'). Requires --entity-id.");
+    private static Option<string> EntityTypeOption() =>
+        RequiredOption("--entity-type", "The type of the target entity, such as 'title_player_account'.");
 
     private static Option<string?> CollectionIdOption() =>
         OptionalOption("--collection-id", "Optional inventory collection id to target (default: 'default').");
@@ -398,7 +399,7 @@ internal static class EconomyCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [AddInventoryItemsPath],
-            Scope: "Adds an item to one collection of one entity's inventory.",
+            Scope: "Adds an item to one collection of one entity's inventory. PlayFab runs the call as the title, which can change any player's inventory.",
             Output: "An acknowledgement with 'ETag', 'IdempotencyId', and 'TransactionIds', the transactions " +
                 "the write recorded. It doesn't include the changed inventory or an operation token. " +
                 "Run 'inventory list' to see the inventory, or 'inventory transaction list' to see the transactions.",
@@ -481,7 +482,7 @@ internal static class EconomyCommandFactory
 
         return command.WithMetadata(new CommandMetadata(
             ApiPaths: [ExecuteInventoryOperationsPath],
-            Scope: "Applies a batch of operations transactionally to one collection.",
+            Scope: "Applies a batch of operations transactionally to one collection. PlayFab runs the call as the title, which can change any player's inventory.",
             Output: "An acknowledgement with 'ETag', 'IdempotencyId', and 'TransactionIds', the transactions " +
                 "the batch recorded. It doesn't include per-operation results, the changed inventory, or an " +
                 "operation token. Run 'inventory list' to see the inventory, or 'inventory transaction list' " +
@@ -572,7 +573,7 @@ internal static class EconomyCommandFactory
 
     private static Command CreateStatusCommand()
     {
-        var entityIdOption = OptionalOption("--entity-id", "The id of the entity that gave the items: the transfer's 'GivingEntity'. Requires --entity-type.");
+        var entityIdOption = RequiredOption("--entity-id", "The ID of the entity that gave the items: the transfer's 'GivingEntity'.");
         var entityTypeOption = EntityTypeOption();
         var collectionIdOption = CollectionIdOption();
         var operationTokenOption = RequiredOption("--operation-token", "The 'OperationToken' from a TransferInventoryItems or ExecuteTransferOperations response whose 'OperationStatus' is InProgress.");
@@ -647,9 +648,9 @@ internal static class EconomyCommandFactory
 
     /// <summary>
     /// Builds the target <see cref="EntityKey"/> from <paramref name="entityId"/>/
-    /// <paramref name="entityType"/>. Both must be supplied together or both omitted (in which case
-    /// <paramref name="entity"/> is <c>null</c> and the request defers to the calling entity).
-    /// Returns <c>false</c> with an <paramref name="error"/> when only one is provided.
+    /// <paramref name="entityType"/>. Both are required, because without an entity PlayFab
+    /// targets the caller, which is always the title, and a title has no inventory. Returns
+    /// <c>false</c> with an <paramref name="error"/> when either is missing or blank.
     /// </summary>
     internal static bool TryBuildEntity(
         string? entityId, string? entityType, out EntityKey? entity, out string? error)
@@ -660,14 +661,9 @@ internal static class EconomyCommandFactory
         var id = Normalize(entityId);
         var type = Normalize(entityType);
 
-        if (id is null && type is null)
-        {
-            return true;
-        }
-
         if (id is null || type is null)
         {
-            error = "Both --entity-id and --entity-type are required when specifying an entity (or omit both to target the calling entity).";
+            error = "--entity-id and --entity-type must not be blank. Pass the entity whose inventory to target, such as --entity-id TITLEPLAYER123 --entity-type title_player_account.";
             return false;
         }
 

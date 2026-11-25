@@ -277,25 +277,8 @@ internal static class PlaytestFields
     internal static string? ReadDeleteStatus(string responseJson) => ReadResponseString(responseJson, "status");
 
     /// <summary>Reads a string property of a response body, or null when the body isn't a JSON object with one.</summary>
-    internal static string? ReadResponseString(string? body, string property)
-    {
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(body);
-            return document.RootElement.ValueKind == JsonValueKind.Object
-                ? ReadOptional(document.RootElement, property)
-                : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
+    internal static string? ReadResponseString(string? body, string property) =>
+        TestAccountCommandFactory.ReadProblemString(body, property);
 
     private static string? ReadOptional(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String

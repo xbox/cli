@@ -59,8 +59,7 @@ internal static partial class ProjectLinks
         internal const string ReleaseTags = "https://github.com/xbox/cli/releases/tag";
 
         /// <summary>
-        /// The latest release's metadata, read by <c>xbox upgrade</c>. The check follows redirects
-        /// only within the GitHub API, so this links to GitHub directly.
+        /// The latest release's metadata, read by <c>xbox upgrade</c>.
         /// </summary>
         internal const string LatestReleaseApi =
             "https://api.github.com/repos/xbox/cli/releases/latest";

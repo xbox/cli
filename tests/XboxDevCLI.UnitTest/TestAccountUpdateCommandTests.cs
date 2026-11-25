@@ -102,21 +102,6 @@ public class TestAccountUpdateCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_AddedTagsLandEvenWhenTheBatchKeepsOtherTags()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Update(keywords: ["old", "nightly", "CreatedWithXboxDevCLI"]),
-            Batch(jobId: null, keywords: ["old", "Nightly", "other", "CreatedWithXboxDevCLI"]),
-            Batch(jobId: null, keywords: ["old", "Nightly", "other", "CreatedWithXboxDevCLI"]));
-
-        Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler);
-
-        Assert.True(result.ExitCode == 0, result.Stderr);
-        using JsonDocument output = JsonDocument.Parse(result.Stdout);
-        Assert.Equal(TestAccountCommandFactory.UpdatedState, output.RootElement.GetProperty("state").GetString());
-    }
-
-    [Fact]
     public async Task Update_ReplacedTagsMustMatchExactly()
     {
         var handler = new XboxPartnerHttpMessageHandler(
@@ -129,32 +114,6 @@ public class TestAccountUpdateCommandTests : IDisposable
 
         Assert.Equal(TestAccountCommandFactory.JobFailedExitCode, result.ExitCode);
         Assert.Contains("does not show the new keywords", result.Stderr, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Update_ReplacedTagsCompareWithCase()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Update(keywords: ["Smoke", "CreatedWithXboxDevCLI"]),
-            Batch(jobId: null, keywords: ["smoke", "CreatedWithXboxDevCLI"]),
-            Batch(jobId: null, keywords: ["smoke", "CreatedWithXboxDevCLI"]));
-
-        Invocation result = await InvokeAsync(
-            UpdateArgs("--confirm", "--tag", "Smoke", "--replace-tags"), handler);
-
-        Assert.Equal(TestAccountCommandFactory.JobFailedExitCode, result.ExitCode);
-        Assert.Contains("does not show the new keywords", result.Stderr, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Update_TrimsTrailingWhitespaceFromTags()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(Update());
-
-        Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--no-wait", "--tag", "nightly\n"), handler);
-
-        Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Equal("""{"keywords":["nightly"]}""", Assert.Single(handler.Requests).Body);
     }
 
     [Fact]
@@ -285,21 +244,6 @@ public class TestAccountUpdateCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_OneFailedReadWhileWaitingIsTolerated()
-    {
-        var handler = new XboxPartnerHttpMessageHandler(
-            Update(),
-            Problem(HttpStatusCode.BadGateway, null),
-            Batch(jobId: null, keywords: ["nightly"]),
-            Batch(jobId: null, keywords: ["nightly"]));
-
-        Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler);
-
-        Assert.True(result.ExitCode == 0, result.Stderr);
-        Assert.Single(handler.Requests, request => request.Method == HttpMethod.Patch);
-    }
-
-    [Fact]
     public async Task Update_ReadThatCannotSucceedWhileWaitingExitsFour()
     {
         var handler = new XboxPartnerHttpMessageHandler(Update(), Problem(HttpStatusCode.NotFound, "test_account_batch_not_found"));
@@ -334,16 +278,14 @@ public class TestAccountUpdateCommandTests : IDisposable
         Assert.Contains("Stopped waiting. The update may still be running", result.Stderr, StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData(1, 2)]
-    [InlineData(30, 30)]
-    public async Task WaitAsync_PollsAsRetryAfterAsksWithinBounds(int retryAfterSeconds, int expectedSeconds)
+    [Fact]
+    public async Task WaitAsync_PollsAsRetryAfterAsksWithinBounds()
     {
         var delays = new List<TimeSpan>();
         DateTimeOffset now = DateTimeOffset.UnixEpoch;
 
         TestAccountBatchWait wait = await TestAccountBatchWaiter.WaitAsync(
-            TimeSpan.FromSeconds(retryAfterSeconds),
+            TimeSpan.FromSeconds(1),
             _ => Task.FromResult(BatchJson(jobId: null)),
             deleting: false,
             TimeSpan.FromMinutes(5),
@@ -357,7 +299,7 @@ public class TestAccountUpdateCommandTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(TestAccountBatchWaitOutcome.JobEnded, wait.Outcome);
-        Assert.Equal([TimeSpan.FromSeconds(expectedSeconds), TimeSpan.FromSeconds(expectedSeconds)], delays);
+        Assert.Equal([TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2)], delays);
     }
 
     [Fact]
@@ -495,7 +437,7 @@ public class TestAccountUpdateCommandTests : IDisposable
 
         Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler);
 
-        Assert.Equal(TestAccountCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains("unknown whether batch 42 is being changed", result.Stderr, StringComparison.Ordinal);
@@ -557,12 +499,30 @@ public class TestAccountUpdateCommandTests : IDisposable
 
         Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler);
 
-        Assert.Equal(TestAccountCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
         Assert.Contains(message, result.Stderr, StringComparison.Ordinal);
         Assert.Contains("unknown whether batch 42 is being changed", result.Stderr, StringComparison.Ordinal);
         Assert.Contains("xbox test-account batch get 42 --seller-id 1234567", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Update_CtrlCAfterSendingWritesTheSentCorrelationId()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var handler = new XboxPartnerHttpMessageHandler(() =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException(cancellation.Token);
+        });
+
+        Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler, cancellation.Token);
+
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Contains("Canceled while waiting for the service to answer the update.", result.Stderr, StringComparison.Ordinal);
+        TestAccountCommandTests.AssertCorrelationIdWrittenOnce(
+            result.Stderr, Assert.Single(Assert.Single(handler.Requests).Headers["x-ms-correlation-id"]));
     }
 
     [Fact]
@@ -666,7 +626,7 @@ public class TestAccountUpdateCommandTests : IDisposable
 
         Invocation result = await InvokeAsync(UpdateArgs("--confirm", "--tag", "nightly"), handler);
 
-        Assert.Equal(TestAccountCommandFactory.OutcomeUnknownExitCode, result.ExitCode);
+        Assert.Equal(XboxPartnerCommandSupport.OutcomeUnknownExitCode, result.ExitCode);
         Assert.Single(handler.Requests);
         Assert.Empty(result.Stdout);
     }

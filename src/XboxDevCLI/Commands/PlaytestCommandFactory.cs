@@ -40,9 +40,6 @@ internal static partial class PlaytestCommandFactory
         return playtest.Requires(CommandRequirement.Authentication).Calls(ServiceEndpoints.XboxPartner);
     }
 
-    /// <summary>Exit code when a create, update, publish, or delete was sent but its outcome is unknown.</summary>
-    internal const int OutcomeUnknownExitCode = 3;
-
     internal const string DateFormat =
         "Dates are ISO 8601, such as 2026-11-01T17:00:00-07:00. A date or time without an offset "
         + "is UTC, so 2026-11-01 is midnight UTC.";
@@ -567,7 +564,7 @@ internal static partial class PlaytestCommandFactory
                         Console.Error.WriteLine("Canceled before the request was sent, so no playtest was created.");
                         return 1;
                     }
-                    catch (Exception exception) when (sent && IsUncertainSubmission(exception))
+                    catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
                     {
                         Console.Error.WriteLine(
                             "Playtest creation was interrupted or its response could not be verified; "
@@ -582,7 +579,7 @@ internal static partial class PlaytestCommandFactory
                         Console.Error.WriteLine(
                             $"If the retry is refused, check whether the playtest exists before creating it with a new key: {recovery}");
                         XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken, correlationId);
-                        return OutcomeUnknownExitCode;
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
                     WriteOutput(result, json, json);
@@ -756,14 +753,14 @@ internal static partial class PlaytestCommandFactory
                         Console.Error.WriteLine(recovery);
                         return 1;
                     }
-                    catch (Exception exception) when (sent && IsUncertainSubmission(exception))
+                    catch (Exception exception) when (sent && XboxPartnerCommandSupport.IsUncertainSubmission(exception))
                     {
                         Console.Error.WriteLine(
                             "The playtest update was interrupted or its response could not be verified; "
                             + "it is unknown whether it was applied.");
                         Console.Error.WriteLine($"Check the playtest with: {recovery}");
                         XboxPartnerCommandSupport.WriteRequestError(exception, result, cancellationToken, correlationId);
-                        return OutcomeUnknownExitCode;
+                        return XboxPartnerCommandSupport.OutcomeUnknownExitCode;
                     }
 
                     WriteOutput(result, json, json);
@@ -848,15 +845,6 @@ internal static partial class PlaytestCommandFactory
         return false;
     }
 
-    /// <summary>
-    /// Whether a failure after the request was sent leaves the outcome unknown: anything but a
-    /// client error (4xx other than 408) from the gateway.
-    /// </summary>
-    private static bool IsUncertainSubmission(Exception exception) =>
-        exception is not XboxPartnerApiException api
-            || (int)api.StatusCode is < 400 or >= 500
-            || api.StatusCode == HttpStatusCode.RequestTimeout;
-
     [GeneratedRegex("^(\"[\\x21\\x23-\\x7E]+\"|[\\x21\\x23-\\x2B\\x2D-\\x7E]+)$")]
     private static partial Regex EtagPattern();
 
@@ -928,7 +916,7 @@ internal static partial class PlaytestCommandFactory
     private const string PackageHelp =
         "A playtest has at most one PC package and one console package. Pass a package's id from 'xbox package list' "
         + "(PACKAGE ID with --output table) that's ready for a playtest: processingState (STATE) is Processed, validationItems contains no item with "
-        + "severity Error, and isAvailableForPlaytest (PLAYTEST) is true. 'xbox playtest get' shows a playtest's current packages. "
+        + "severity Error (ERRORS is 0), and isAvailableForPlaytest (PLAYTEST) is true. 'xbox playtest get' shows a playtest's current packages. "
         + "When the package is in more than one package set, the one on the game's Main branch is used, and in more than one market group of that set, the default one. "
         + "The request is refused, and nothing is written, when the game has no package with that ID, the ID matches more than one package set "
         + "with none of them on the Main branch or more than one market group with none of them the default one, the package doesn't target that option's platform, or it isn't "

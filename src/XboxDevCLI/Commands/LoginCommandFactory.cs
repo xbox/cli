@@ -31,6 +31,8 @@ internal static class LoginCommandFactory
             return 0;
         });
 
-        return command.FormatsErrors((_, message) => $"Login failed: {message}");
+        return command
+            .FormatsErrors((_, message) => $"Login failed: {message}")
+            .WithMetadata(new CommandMetadata(Examples: ["xbox auth login"]));
     }
 }
